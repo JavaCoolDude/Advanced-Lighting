@@ -32,29 +32,32 @@ VS_OUTPUT_SHADOW VSMainShadow( VS_INPUT Input )
 }
 
 //--------------------------------------------------------------------------------------------------
-VS_OUTPUT_SIMPLE VSMainLight(float3 vPosition  : POSITION)
+VS_OUTPUT_LIGHT VSMainLight(float3 vPosition  : POSITION, uint iid : SV_InstanceID)
 {
-  VS_OUTPUT_SIMPLE output;
+  VS_OUTPUT_LIGHT output;
+  LightInstance   instance   = m_LightInstances[iid];
 
   // Compute the local position
-  float3 local_pos    = vPosition * m_mSimpleRadius;
+  float3          local_pos  = vPosition * instance.m_Radius;
 
   // Compute clip_pos.w
-  float clip_pos_w    = (local_pos.x * m_mSimpleTransform[0].w) +
-                        (local_pos.y * m_mSimpleTransform[1].w) + 
-                        (local_pos.z * m_mSimpleTransform[2].w) +
-                                       m_mSimpleTransform[3].w;
+  float           clip_pos_w  = (local_pos.x * instance.m_Transform[0].w) +
+                                (local_pos.y * instance.m_Transform[1].w) + 
+                                (local_pos.z * instance.m_Transform[2].w) +
+                                               instance.m_Transform[3].w;
 
   // Compute how far we need to push out the vertex to avoid missing the pixel center of a LLL tile 
   // If LLL tile size is 8 pixels then we need to expand the light shell by roughly 5 pixels
-  float  push_length  = max( clip_pos_w, 0.0f ) * m_mSimplePushScale;
+  float  push_length  = max( clip_pos_w, 0.0f ) * m_fLightPushScale;
                       
   float3 push_vec     = normalize( vPosition )  * push_length;
 
   float3 new_position = local_pos + push_vec;
 
-  output.vPosition    = TransformPosition(new_position, m_mSimpleTransform);
+  output.vPosition    = TransformPosition(new_position, instance.m_Transform);
   
+  output.fLightIndex  = instance.m_LightIndex;
+
   // Done
   return output;
 }
@@ -316,10 +319,17 @@ float PSClearLLLEighth(in VS_OUTPUT2D input) : SV_TARGET0
                         
   uint   dst_index      = ScreenUVsToLLLIndex( screen_uvs );
   uint   dst_offset     = dst_index * 4;
+  uint   buffer_size    = m_iLLLWidth * m_iLLLHeight * 4;
 
   g_LightStartOffsetBuffer.Store( dst_offset, 0xFFFFFFFF);
-  g_LightBoundsBuffer.Store(      dst_offset, 0xFFFF77D0);
- 
+
+  // Clear all the bounds buffer layers
+  [unroll]
+  for(uint idx = 0; idx < MAX_LLL_BLAYERS; ++idx)
+  {
+    g_LightBoundsBuffer.Store( dst_offset + idx * buffer_size, 0xFFFF77D0);
+  }
+
   float4 d4_max;
 
   {
@@ -426,8 +436,9 @@ void AllocateLightFragmentLink(uint dst_offset, uint light_index, float min_d, f
 }
 
 //--------------------------------------------------------------------------------------------------
-void PSInsertLightNoCulling(in float4 vpos_f     : SV_POSITION,
-                            in bool   front_face : SV_IsFrontFace )
+void PSInsertLightNoCulling(in float4 vpos_f      : SV_POSITION,
+                            in float  fLightIndex : TEXCOORD0,
+                            in bool   front_face  : SV_IsFrontFace )
 {
   // Float to unsigned int
   uint2   vpos_i           = vpos_f.xy;
@@ -436,7 +447,7 @@ void PSInsertLightNoCulling(in float4 vpos_f     : SV_POSITION,
   float   light_depth      = vpos_f.w; 
 
   // Light global index
-  uint    light_index      = m_mSimpleLightIndex;
+  uint    light_index      = fLightIndex;
   
   // Detect front faces
   if((front_face == true) && ( g_txDepth[vpos_i].x < light_depth))
@@ -444,17 +455,21 @@ void PSInsertLightNoCulling(in float4 vpos_f     : SV_POSITION,
     return;
   }  
   
+  // Generate an offset based on the light id to allow for instancing
+  uint    bbuffer_size     = m_iLLLWidth * m_iLLLHeight * 4;
+  uint    bbuffer_idx      = light_index % MAX_LLL_BLAYERS;
+  uint    bbuffer_offset   = bbuffer_idx * bbuffer_size;
+
   // Calculate the ByteAddressBuffer destination offset
   uint    dst_offset       = (vpos_i.y  * m_iLLLWidth + vpos_i.x) << 2; 
-
-
+  
   // Encode the light index in the upper 16 bits and the linear depth in the lower 16
   uint    new_bounds_info  = (light_index << 16) | f32tof16( light_depth);
 
   // Load the content that was written by the front faces
   uint    bounds_info;
 
-  g_LightBoundsBuffer.InterlockedExchange( dst_offset, new_bounds_info, bounds_info );
+  g_LightBoundsBuffer.InterlockedExchange( dst_offset + bbuffer_offset, new_bounds_info, bounds_info );
   
   // Decode the stored light index   
   uint    stored_index    = (bounds_info >> 16);
@@ -476,8 +491,9 @@ void PSInsertLightNoCulling(in float4 vpos_f     : SV_POSITION,
 }
 
 //--------------------------------------------------------------------------------------------------
-void PSInsertLightBackFace(in float4 vpos_f     : SV_POSITION,
-                           in bool   front_face : SV_IsFrontFace )
+void PSInsertLightBackFace(in float4 vpos_f      : SV_POSITION,
+                           in float  fLightIndex : TEXCOORD0,
+                           in bool   front_face  : SV_IsFrontFace )
 {
   // Float to unsigned int
   uint2   vpos_i           = vpos_f.xy;
@@ -486,9 +502,10 @@ void PSInsertLightBackFace(in float4 vpos_f     : SV_POSITION,
   float   light_depth      = vpos_f.w; 
 
   // Light global index
-  uint    light_index      = m_mSimpleLightIndex;
+  uint    light_index      = fLightIndex;
    
-  // Calculate the ByteAddressBuffer destination offset
+  // Calculate the ByteAddressBuffer destination offset:
+  // Since we don't do instancing in this code path stick with the first layer
   uint    dst_offset       = (vpos_i.y  * m_iLLLWidth + vpos_i.x) << 2; 
        
   // Detect front faces

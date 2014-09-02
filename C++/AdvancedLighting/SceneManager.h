@@ -231,10 +231,9 @@ private:
 
     void        DrawQuad(float x, float y, float w, float h);
 
-    void        DrawLightShell(const DirectX::XMMATRIX& matViewProj, float x, float y, float z, float radius, float index);
-
     // Draw an ellipsoid light shell
-    void        DrawEllipsoidLightShell();
+    void        DrawEllipsoidLightShells(int inst_count);
+    void        ReDrawEllipsoidLightShell();
 
     // Compute the near and far plane by intersecting an Ortho Projection with the Scenes AABB.
     void        ComputeNearAndFar( FLOAT& fNearPlane, 
@@ -282,6 +281,7 @@ private:
     RenderTarget                        m_CascadedShadowMapRT; 
     RenderTarget                        m_GBufferRT;
 
+    ID3D11Buffer*                       m_pcbLightInstancesCB;  
     ID3D11Buffer*                       m_pcbShadowCB;  
     ID3D11Buffer*                       m_pcbSimpleCB;  
     ID3D11Buffer*                       m_pcbFrameCB;  

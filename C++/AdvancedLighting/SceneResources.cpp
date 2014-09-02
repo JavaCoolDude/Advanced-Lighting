@@ -361,6 +361,13 @@ HRESULT SceneManager::Init ( ID3D11Device*           pd3dDevice,
     Desc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
     Desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
+    // Light Instances
+    {
+      Desc.ByteWidth = sizeof( LightInstancesCB );
+      V_RETURN( pd3dDevice->CreateBuffer( &Desc, nullptr, &m_pcbLightInstancesCB ) );
+      DXUT_SetDebugName( m_pcbLightInstancesCB, "m_pcbLightInstancesCB" );
+    }
+
     // Frame
     {
       Desc.ByteWidth = sizeof( FrameCB );
@@ -574,7 +581,7 @@ HRESULT   SceneManager::ReloadShaders()
 }
 
 //--------------------------------------------------------------------------------------
-void   SceneManager::DrawEllipsoidLightShell()
+void   SceneManager::DrawEllipsoidLightShells(int inst_count)
 {
   uint32_t v_stride = sizeof(float4);
   uint32_t v_offset = 0;
@@ -582,6 +589,13 @@ void   SceneManager::DrawEllipsoidLightShell()
   // Bind the static vertex buffer
   m_pd3dDeviceContext->IASetVertexBuffers( 0, 1, &m_pLightVB, &v_stride, &v_offset );
 
+  // Draw the geometry
+  m_pd3dDeviceContext->DrawInstanced(ARRAYSIZE(s_EllipsoidVertTable), inst_count, 0, 0);
+}
+
+//--------------------------------------------------------------------------------------
+void   SceneManager::ReDrawEllipsoidLightShell()
+{
   // Draw the geometry
   m_pd3dDeviceContext->Draw(ARRAYSIZE(s_EllipsoidVertTable), 0);
 }
@@ -629,9 +643,10 @@ HRESULT SceneManager::ReleaseResources()
   SAFE_RELEASE( m_pdsDefault );
   SAFE_RELEASE( m_pdsNoWrite );
   
-  SAFE_RELEASE( m_pcbSimpleCB );
-  SAFE_RELEASE( m_pcbShadowCB );
-  SAFE_RELEASE( m_pcbFrameCB  );
+  SAFE_RELEASE( m_pcbLightInstancesCB);
+  SAFE_RELEASE( m_pcbSimpleCB        );
+  SAFE_RELEASE( m_pcbShadowCB        );
+  SAFE_RELEASE( m_pcbFrameCB         );
  
   SAFE_RELEASE( m_pLightVB    );
 

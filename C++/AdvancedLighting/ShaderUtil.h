@@ -4,6 +4,7 @@
 
 #define MAX_LINKED_LIGHTS_PER_PIXEL 64
 #define MAX_LLL_ELEMENTS            0xFFFFFF
+#define MAX_LLL_BLAYERS             12
 #define MAX_LLL_LIGHTS              256
 
 #define MAX_CASCADES                8
@@ -14,6 +15,7 @@
 #define CB_FRAME             0
 #define CB_SIMPLE            1
 #define CB_SHADOW_DATA       1
+#define CB_LIGHT_INSTANCES   1
 
 //--------------------------------------------------------------------------------------
 // Textures 
@@ -96,8 +98,8 @@ cbuffer FrameCB     B_REGISTER( CB_FRAME )
     float4          m_vCameraPos;
     uint            m_iLLLWidth;
     uint            m_iLLLHeight;
-    uint            m_iLLLMaxAlloc;
-    uint            m_iUnused;
+    uint            m_iLLLMaxAlloc; 
+    float           m_fLightPushScale;
 };
 
 //-------------------------------------------------------------------------
@@ -129,13 +131,28 @@ cbuffer ShadowDataCB B_REGISTER( CB_SHADOW_DATA )
 };
 
 //-------------------------------------------------------------------------
+struct LightInstance
+{
+  float4x4          m_Transform;
+  float             m_LightIndex;
+  float             m_Radius;
+  float             m_PadA;
+  float             m_PadB;
+};
+
+//-------------------------------------------------------------------------
 cbuffer SimpleCB B_REGISTER( CB_SIMPLE )
 {
   float4x4          m_mSimpleTransform;
   float             m_mSimpleLightIndex;
-  float             m_mSimplePushScale;
   float             m_mSimpleRadius;
-  float             m_mSimpleUnused;
+  float             m_mSimplePadA;
+  float             m_mSimplePadB;
+};
+
+cbuffer LightInstancesCB B_REGISTER( CB_LIGHT_INSTANCES )
+{
+  LightInstance     m_LightInstances[MAX_LLL_LIGHTS];
 };
 
 #if defined(__HLSL_SHADER__)
@@ -201,9 +218,10 @@ struct VS_OUTPUT_SHADOW
   float4 vPosition    : SV_POSITION;
 };
 
-struct VS_OUTPUT_SIMPLE
+struct VS_OUTPUT_LIGHT
 {
   float4 vPosition    : SV_POSITION;
+  float  fLightIndex  : TEXCOORD0;
 };
 
 //--------------------------------------------------------------------------------------------------

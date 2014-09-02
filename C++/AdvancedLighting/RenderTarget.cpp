@@ -435,17 +435,20 @@ bool LightLinkedListTarget::Init(int32_t full_width, int32_t full_height)
   // Buffer format
   DXGI_FORMAT       u32BufFormat = DXGI_FORMAT_R32_TYPELESS;
 
-  // Declare buffer
-  D3D11_BUFFER_DESC u32Buf       = { 0 };
-  u32Buf.StructureByteStride     = sizeof( unsigned int );
-  u32Buf.ByteWidth               = num_elements * u32Buf.StructureByteStride;
-  u32Buf.MiscFlags               = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
-  u32Buf.BindFlags               = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
-
   // Bounds
   {
-    // Create the buffer
-    hr                           = d3d_device->CreateBuffer(&u32Buf, NULL, &m_BoundsBuffer);
+    // We create N (MAX_LLL_BLAYERS) layers to support geometry instancing
+    uint32_t          bnum_elements = num_elements * MAX_LLL_BLAYERS;
+
+    // Declare buffer               
+    D3D11_BUFFER_DESC u32Buf        = { 0 };
+    u32Buf.StructureByteStride      = sizeof( unsigned int );
+    u32Buf.ByteWidth                = bnum_elements * u32Buf.StructureByteStride;
+    u32Buf.MiscFlags                = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+    u32Buf.BindFlags                = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+                                    
+    // Create the buffer            
+    hr                              = d3d_device->CreateBuffer(&u32Buf, NULL, &m_BoundsBuffer);
 
     // Validate
     if(hr != S_OK) {  assert( !"IGCreateRenderResource Failed" ); return false; }
@@ -456,7 +459,7 @@ bool LightLinkedListTarget::Init(int32_t full_width, int32_t full_height)
     descUAV.ViewDimension       = D3D11_UAV_DIMENSION_BUFFER;
     descUAV.Buffer.FirstElement = 0;
     descUAV.Format              = u32BufFormat;
-    descUAV.Buffer.NumElements  = num_elements;
+    descUAV.Buffer.NumElements  = bnum_elements;
     descUAV.Buffer.Flags        = D3D11_BUFFER_UAV_FLAG_RAW;
 
     hr                          = d3d_device->CreateUnorderedAccessView( m_BoundsBuffer, &descUAV, &m_BoundsUAV );
@@ -467,6 +470,13 @@ bool LightLinkedListTarget::Init(int32_t full_width, int32_t full_height)
 
   // Offset
   {
+    // Declare buffer
+    D3D11_BUFFER_DESC u32Buf    = { 0 };
+    u32Buf.StructureByteStride  = sizeof( unsigned int );
+    u32Buf.ByteWidth            = num_elements * u32Buf.StructureByteStride;
+    u32Buf.MiscFlags            = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+    u32Buf.BindFlags            = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+
     // Create the buffer
     hr                          = d3d_device->CreateBuffer(&u32Buf, NULL, &m_StartOffsetBuffer);
 

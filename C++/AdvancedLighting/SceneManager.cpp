@@ -437,7 +437,7 @@ HRESULT SceneManager::ProcessLinkedList()
     XMStoreFloat4A(&near_plane, xm_nplane);
 
     // Unique seed to guarantee same values over and over again
-    srand((int)this);
+    srand(0xF8E732AC);
 
     float fade_interval = 8;
     float fade_distance = m_pViewerCamera->GetFarClip() - 48;
@@ -542,30 +542,70 @@ HRESULT SceneManager::ProcessLinkedList()
     // Disable culling
     m_pd3dDeviceContext->RSSetState( m_prsCullNone ); 
     m_pd3dDeviceContext->PSSetShader( m_ppsInsertLightNoCulling.m_Shader,  nullptr, 0 ); 
-
-    // Render the unclipped lights via one single drawcall each
-    for(int l_idx = 0; l_idx < unclipped_count; ++l_idx, ++light_idx)
+ 
+    // Render the unclipped lights via one instanced drawcall
+    if(unclipped_count != 0)
     {
-      GPULightEnv* light_env = gpu_lights + int(light_idx);
-      DrawLightShell(matViewProjection, light_env->m_WorldPos.x, light_env->m_WorldPos.y, light_env->m_WorldPos.z, light_env->m_Radius, light_idx);
-    }
+      D3D11_MAPPED_SUBRESOURCE MappedResource;
+      m_pd3dDeviceContext->Map( m_pcbLightInstancesCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource );
+      auto inst_cb = reinterpret_cast<LightInstancesCB*>( MappedResource.pData );
 
-    // Switch pixel shaders
-    m_pd3dDeviceContext->PSSetShader( m_ppsInsertLightBackFace.m_Shader,  nullptr, 0 ); 
+      for(int l_idx = 0; l_idx < unclipped_count; ++l_idx, ++light_idx)
+      {
+        int             int_idx    = int(light_idx);
+        GPULightEnv*    light_env  = gpu_lights                + int_idx;
+        LightInstance*  light_inst = inst_cb->m_LightInstances + int_idx;
 
-    // Render the clipped lights each with two drawcalls
-    for(int l_idx = 0; l_idx < clipped_count; ++l_idx, ++light_idx)
+        // Fill the instance information
+        { 
+          XMMATRIX light_trans = XMMatrixTranslation(light_env->m_WorldPos.x, light_env->m_WorldPos.y, light_env->m_WorldPos.z);
+          XMStoreFloat4x4( &light_inst->m_Transform, light_trans * matViewProjection );
+          light_inst->m_LightIndex  = light_idx;
+          light_inst->m_Radius      = light_env->m_Radius;
+        } 
+      }        
+      
+      m_pd3dDeviceContext->Unmap( m_pcbLightInstancesCB, 0 );
+      m_pd3dDeviceContext->VSSetConstantBuffers( CB_LIGHT_INSTANCES, 1, &m_pcbLightInstancesCB );
+
+      // Draw all the instances in one call
+      DrawEllipsoidLightShells(unclipped_count);
+    } 
+     
+    // Check if we have any clipped geometry
+    if(clipped_count)
     {
-      GPULightEnv* light_env = gpu_lights + int(light_idx);
+      D3D11_MAPPED_SUBRESOURCE MappedResource;
 
-      // Render the front faces first
-      m_pd3dDeviceContext->RSSetState( m_prsCullBackFaces ); 
-      DrawLightShell(matViewProjection, light_env->m_WorldPos.x, light_env->m_WorldPos.y, light_env->m_WorldPos.z, light_env->m_Radius, light_idx);
+      // Switch pixel shaders
+      m_pd3dDeviceContext->PSSetShader( m_ppsInsertLightBackFace.m_Shader,  nullptr, 0 ); 
 
-      // Render the back faces last
-      m_pd3dDeviceContext->RSSetState( m_prsCullFrontFaces ); 
-      DrawEllipsoidLightShell();
-    }
+      // Render the clipped lights each with two drawcalls
+      for(int l_idx = 0; l_idx < clipped_count; ++l_idx, ++light_idx)
+      {
+        GPULightEnv* light_env = gpu_lights + int(light_idx);
+               
+        m_pd3dDeviceContext->Map( m_pcbSimpleCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource );
+        auto simple_cb = reinterpret_cast<SimpleCB*>( MappedResource.pData );
+  
+        {  
+          XMMATRIX light_trans = XMMatrixTranslation(light_env->m_WorldPos.x, light_env->m_WorldPos.y, light_env->m_WorldPos.z);
+          XMStoreFloat4x4( &simple_cb->m_mSimpleTransform, light_trans * matViewProjection );
+          simple_cb->m_mSimpleLightIndex  = light_idx; 
+          simple_cb->m_mSimpleRadius      = light_env->m_Radius;
+        }
+        m_pd3dDeviceContext->Unmap( m_pcbSimpleCB, 0 );
+        m_pd3dDeviceContext->VSSetConstantBuffers( CB_LIGHT_INSTANCES, 1, &m_pcbSimpleCB );
+
+        // Render the front faces first
+        m_pd3dDeviceContext->RSSetState( m_prsCullBackFaces );
+        DrawEllipsoidLightShells(1); 
+
+        // Render the back faces last
+        m_pd3dDeviceContext->RSSetState( m_prsCullFrontFaces ); 
+        ReDrawEllipsoidLightShell();
+      }
+    } 
   }
 
   // Clear the UAVs and bind them as SRVs
@@ -759,30 +799,6 @@ HRESULT SceneManager::CompositeScene(ID3D11RenderTargetView* prtvBackBuffer)
 }
 
 //--------------------------------------------------------------------------------------
-void SceneManager::DrawLightShell(const XMMATRIX& matViewProj, float x, float y, float z, float radius, float light_idx)
-{ 
-  XMMATRIX light_trans = XMMatrixTranslation(x, y, z);
- 
-  {
-    D3D11_MAPPED_SUBRESOURCE MappedResource;
-    m_pd3dDeviceContext->Map( m_pcbSimpleCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource );
-    auto simple_cb = reinterpret_cast<SimpleCB*>( MappedResource.pData );
-
-    XMStoreFloat4x4( &simple_cb->m_mSimpleTransform, light_trans * matViewProj );
-    simple_cb->m_mSimpleLightIndex  = light_idx;
-    simple_cb->m_mSimplePushScale   = m_pViewerCamera->GetAspectRatio() / (2.0f * m_LLLTarget.GetWidth());
-    simple_cb->m_mSimpleRadius      = radius;
-
-    m_pd3dDeviceContext->Unmap( m_pcbSimpleCB, 0 );
-
-    m_pd3dDeviceContext->VSSetConstantBuffers( CB_SIMPLE, 1, &m_pcbSimpleCB );
-    m_pd3dDeviceContext->PSSetConstantBuffers( CB_SIMPLE, 1, &m_pcbSimpleCB );
-  }
- 
-  DrawEllipsoidLightShell();
-}
-
-//--------------------------------------------------------------------------------------
 void SceneManager::SetViewport(CFirstPersonCamera* pViewerCamera, D3D11_VIEWPORT* vp)
 {
   XMMATRIX matCameraProj          = pViewerCamera->GetProjMatrix();
@@ -809,6 +825,7 @@ void SceneManager::SetViewport(CFirstPersonCamera* pViewerCamera, D3D11_VIEWPORT
   pcbFrame->m_iLLLWidth           = m_LLLTarget.GetWidth();
   pcbFrame->m_iLLLHeight          = m_LLLTarget.GetHeight();
   pcbFrame->m_iLLLMaxAlloc        = m_LLLTarget.GetMaxLinkedElements();
+  pcbFrame->m_fLightPushScale     = m_pViewerCamera->GetAspectRatio() / (2.0f * m_LLLTarget.GetWidth());
 
   XMStoreFloat4x4( &pcbFrame->m_mWorldViewProj, matWorldViewProjection   );
   XMStoreFloat4x4( &pcbFrame->m_mWorldView,     matCameraView            ); 
