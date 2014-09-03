@@ -49,3 +49,5 @@ Icon
 *.pdb
 *.suo
 *.lastbuildstate
+*.opensdf
+*.sdf

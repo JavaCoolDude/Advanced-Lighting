@@ -122,10 +122,10 @@ float4 PSLit3D(in  VS_OUTPUT input, in float4 vpos_f : SV_POSITION) : SV_TARGET0
   EvaluateDynamicLights(ws_pos, ws_nrm, screen_uvs, ldepth_exp, dynamic_diffuse, dynamic_specular);
 
   // Evaluate the main light
-  float3 main_light = EvaluateMainLight(ws_pos, ws_nrm);
+  float3 main_light         = EvaluateMainLight(ws_pos, ws_nrm);
 
   // Done
-  return float4(main_light + dynamic_diffuse, 0.60f);
+  return float4(main_light + dynamic_diffuse, 0.50f);
 }
 
 

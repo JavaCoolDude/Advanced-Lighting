@@ -453,7 +453,7 @@ HRESULT SceneManager::ProcessLinkedList()
     XMStoreFloat4A(&near_plane, xm_nplane);
 
     // Unique seed to guarantee same values over and over again
-    srand(0xF8E732AC);
+    srand(0xF7328EAC);
 
     float fade_interval = 8;
     float fade_distance = m_pViewerCamera->GetFarClip() - 48;
@@ -843,8 +843,10 @@ HRESULT SceneManager::DrawAlpha(CDXUTSDKMesh* pMesh)
   SetSampler( SAM_LINEAR, m_pSamLinear );
   SetSampler( SAM_POINT,  m_pSamPoint  );
  
+  SetTexture(TEX_SHADOW, m_CascadedShadowMapRT.GetDepthTexture());
+
   // Unique seed to guarantee same values over and over again
-  srand(0xF8E732AC);
+  srand(0xF328E7AC);
    
   float spacing       = 20.0f;
   float base_scale    = 2.5f;
@@ -893,6 +895,8 @@ HRESULT SceneManager::DrawAlpha(CDXUTSDKMesh* pMesh)
 
   // Reset depth stencil state
   m_pd3dDeviceContext->OMSetDepthStencilState(m_pdsDefault, 0xFF);
+
+  ClearTexture(TEX_SHADOW);
 
   // Done
   return S_OK;
