@@ -1,5 +1,5 @@
 #include "dxut.h"
-#include "ShaderUtil.h"
+#include "ShaderShared.h"
 #include "RenderTarget.h"
 
 //--------------------------------------------------------------------------------------------------

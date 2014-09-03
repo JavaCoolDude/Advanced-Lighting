@@ -1,161 +1,9 @@
-//--------------------------------------------------------------------------------------
-// Globals
-//--------------------------------------------------------------------------------------
+ #include "ShaderShared.h"
 
-#define MAX_LINKED_LIGHTS_PER_PIXEL 64
-#define MAX_LLL_ELEMENTS            0xFFFFFF
-#define MAX_LLL_BLAYERS             12
-#define MAX_LLL_LIGHTS              256
-
-#define MAX_CASCADES                8
-
-//--------------------------------------------------------------------------------------
-// Constant Buffers 
-//--------------------------------------------------------------------------------------
-#define CB_FRAME             0
-#define CB_SIMPLE            1
-#define CB_SHADOW_DATA       1
-#define CB_LIGHT_INSTANCES   1
-
-//--------------------------------------------------------------------------------------
-// Textures 
-//--------------------------------------------------------------------------------------
-#define TEX_DIFFUSE          0 
-
-#define TEX_DEPTH            0
-#define TEX_NRM              1
-#define TEX_COL              2
-
-#define TEX_SHADOW           5
-
-#define SRV_LIGHT_LINKED     10
-#define SRV_LIGHT_OFFSET     11
-#define SRV_LIGHT_ENV        12
-
-//--------------------------------------------------------------------------------------
-// Samplers 
-//--------------------------------------------------------------------------------------
-#define SAM_LINEAR           0 
-#define SAM_POINT            1
-#define SAM_SHADOW           5
-
-//--------------------------------------------------------------------------------------
-// UAVS 
-//--------------------------------------------------------------------------------------
-#define UAV_LIGHT_LINKED     3
-#define UAV_LIGHT_OFFSET     4
-#define UAV_LIGHT_BOUNDS     5
- 
-// The number of cascades 
-#define CASCADE_COUNT_FLAG   3
-#define CASCADE_BUFFER_SIZE  1536
-
-// C/C++ side of things
-#if !defined(__HLSL_SHADER__)
-  typedef DirectX::XMFLOAT4X4  float4x4;
-  typedef DirectX::XMFLOAT4    float4;
-  typedef DirectX::XMFLOAT3    float3;
-  typedef DirectX::XMINT4      int4;
-  typedef uint32_t             uint;
-
-  #define cbuffer              struct 
-
-  #define B_REGISTER( reg_ )
-  #define T_REGISTER( reg_ )
-  #define S_REGISTER( reg_ )
-  #define U_REGISTER( reg_ )
-
-// HLSL
-#else
-  #pragma pack_matrix( row_major )
-
-  #define B_REGISTER( reg_ ) : register(b##reg_)
-  #define T_REGISTER( reg_ )   register(t##reg_)
-  #define S_REGISTER( reg_ )   register(s##reg_)
-  #define U_REGISTER( reg_ )   register(u##reg_)
-
-#endif
-
-
-//--------------------------------------------------------------------------
-struct GPULightEnv
-{
-  float3    m_WorldPos;
-  float     m_Radius;
-
-  float3    m_LinearColor;
-  float     m_SpecIntensity; 
-};
-
-//-------------------------------------------------------------------------
-cbuffer FrameCB     B_REGISTER( CB_FRAME )
-{
-    float4x4        m_mWorldViewProj;
-    float4x4        m_mWorldView; 
-    float4x4        m_mWorld;
-    float4          m_vLinearDepthConsts;
-    float4          m_vViewportToClip;
-    float4          m_vCameraPos;
-    uint            m_iLLLWidth;
-    uint            m_iLLLHeight;
-    uint            m_iLLLMaxAlloc; 
-    float           m_fLightPushScale;
-};
-
-//-------------------------------------------------------------------------
-cbuffer ShadowDataCB B_REGISTER( CB_SHADOW_DATA )
-{
-    float4x4        m_mShadow;
-    float4          m_vCascadeOffset[8];
-    float4          m_vCascadeScale[8];
-    int             m_nCascadeLevels; // Number of Cascades
-    int             m_iVisualizeCascades; // 1 is to visualize the cascades in different colors. 0 is to just draw the scene
-    int             m_iPCFBlurForLoopStart; // For loop begin value. For a 5x5 kernel this would be -2.
-    int             m_iPCFBlurForLoopEnd; // For loop end value. For a 5x5 kernel this would be 3.
-
-    // For Map based selection scheme, this keeps the pixels inside of the the valid range.
-    // When there is no boarder, these values are 0 and 1 respectively.
-    float           m_fMinBorderPadding;     
-    float           m_fMaxBorderPadding;
-    float           m_fShadowBiasFromGUI;  // A shadow map offset to deal with self shadow artifacts.  
-                                           //These artifacts are aggravated by PCF.
-    float           m_fShadowPartitionSize; 
-
-    float           m_fCascadeBlendArea; // Amount to overlap when blending between cascades.
-    float           m_fTexelSize; 
-    float           m_fNativeTexelSizeInX;
-    float           m_fPaddingForCB3; // Padding variables exist because CBs must be a multiple of 16 bytes. 
-
-    float3          m_vLightDir;
-    float           m_fPaddingCB4;
-};
-
-//-------------------------------------------------------------------------
-struct LightInstance
-{
-  float4x4          m_Transform;
-  float             m_LightIndex;
-  float             m_Radius;
-  float             m_PadA;
-  float             m_PadB;
-};
-
-//-------------------------------------------------------------------------
-cbuffer SimpleCB B_REGISTER( CB_SIMPLE )
-{
-  float4x4          m_mSimpleTransform;
-  float             m_mSimpleLightIndex;
-  float             m_mSimpleRadius;
-  float             m_mSimplePadA;
-  float             m_mSimplePadB;
-};
-
-cbuffer LightInstancesCB B_REGISTER( CB_LIGHT_INSTANCES )
-{
-  LightInstance     m_LightInstances[MAX_LLL_LIGHTS];
-};
-
-#if defined(__HLSL_SHADER__)
+static const float3 vLightDir1 = float3( -1.0f,  1.0f, -1.0f ); 
+static const float3 vLightDir2 = float3(  1.0f,  1.0f, -1.0f ); 
+static const float3 vLightDir3 = float3(  0.0f, -1.0f,  0.0f );
+static const float3 vLightDir4 = float3(  1.0f,  1.0f,  1.0f ); 
 
 //--------------------------------------------------------------------------------------
 // Textures 
@@ -213,9 +61,10 @@ struct VS_OUTPUT2D
     float2 vTexcoord    : TEXCOORD0;
 };
 
-struct VS_OUTPUT_SHADOW
+struct VS_OUTPUT_SIMPLE
 {
   float4 vPosition    : SV_POSITION;
+  float3 vNormal      : NORMAL;
 };
 
 struct VS_OUTPUT_LIGHT
@@ -231,6 +80,12 @@ float4  TransformPosition(float3 position, float4x4 transform)
 }
 
 //--------------------------------------------------------------------------------------------------
+float4  TransformPosition(float4 position, float4x4 transform)
+{
+  return TransformPosition(position.xyz, transform);
+}
+
+//--------------------------------------------------------------------------------------------------
 uint    ScreenUVsToLLLIndex(float2 screen_uvs)
 {
   uint   x_unorm = saturate(screen_uvs.x) * m_iLLLWidth;
@@ -239,4 +94,184 @@ uint    ScreenUVsToLLLIndex(float2 screen_uvs)
   return y_unorm * m_iLLLWidth + x_unorm;
 }
 
-#endif
+//--------------------------------------------------------------------------------------
+void ComputeCoordinatesTransform(in int        iCascadeIndex, 
+                                 in out float4 vShadowTexCoord , 
+                                 in out float4 vShadowTexCoordViewSpace ) 
+{     
+  vShadowTexCoord.x *= m_fShadowPartitionSize;  // precomputed (float)iCascadeIndex / (float)CASCADE_CNT
+  vShadowTexCoord.x += (m_fShadowPartitionSize * (float)iCascadeIndex ); 
+} 
+
+//--------------------------------------------------------------------------------------
+// Use PCF to sample the depth map and return a percent lit value.
+//--------------------------------------------------------------------------------------
+void CalculatePCFPercentLit (in  float4 vShadowTexCoord, 
+                             in  float fRightTexelDepthDelta, 
+                             in  float fUpTexelDepthDelta, 
+                             in  float fBlurRowSize,
+                             out float fPercentLit
+                             ) 
+{
+  fPercentLit = 0.0f;
+  // This loop could be unrolled, and texture immediate offsets could be used if the kernel size were fixed.
+  // This would be performance improvement.
+  for( int x = m_iPCFBlurForLoopStart; x < m_iPCFBlurForLoopEnd; ++x ) 
+  {
+    for( int y = m_iPCFBlurForLoopStart; y < m_iPCFBlurForLoopEnd; ++y ) 
+    {
+      float depthcompare = vShadowTexCoord.z;
+      // A very simple solution to the depth bias problems of PCF is to use an offset.
+      // Unfortunately, too much offset can lead to Peter-panning (shadows near the base of object disappear )
+      // Too little offset can lead to shadow acne ( objects that should not be in shadow are partially self shadowed ).
+      depthcompare -= m_fShadowBiasFromGUI;
+
+      // Compare the transformed pixel depth to the depth read from the map.
+      fPercentLit += g_txShadow.SampleCmpLevelZero( g_samShadow, 
+        float2( 
+        vShadowTexCoord.x + ( ( (float) x ) * m_fNativeTexelSizeInX ) , 
+        vShadowTexCoord.y + ( ( (float) y ) * m_fTexelSize ) 
+        ), 
+        depthcompare );
+    }
+  }
+  fPercentLit /= (float)fBlurRowSize;
+}
+
+//--------------------------------------------------------------------------------------------------
+float PhysicalFalloff(float3 v)
+{
+  // |v| ranges from 0 to 1 over the light's radius 
+  float r_sqd = saturate(dot(v,v));
+  return 1.0f/r_sqd - 2.0f + r_sqd;
+}
+
+//--------------------------------------------------------------------------------------------------
+void EvaluatePunctualLight(in    GPULightEnv  light,
+                           
+                           in    float3       ws_pos,
+                           in    float3       ws_norm, 
+                                                                       
+                           inout float3       diffuse,
+                           inout float3       specular)
+{ 
+  // Normal N, view vector V and light vector L
+  float3 N                = ws_norm; 
+  float3 L_unrm           = light.m_WorldPos - ws_pos;
+  float3 pos_rel          = L_unrm * rcp(light.m_Radius); 
+  float3 L                = normalize(L_unrm); 
+                          
+  float  NL_              = dot(N, L);
+  float  NL_front         = saturate( NL_ );                       
+                          
+  float dist_falloff_lin  = saturate( 1.0f - dot( L, pos_rel ));
+  //float light_falloff     = pow(dist_falloff_lin, 2);
+  float light_falloff     = PhysicalFalloff( pos_rel );
+  
+  diffuse                += light.m_LinearColor * light_falloff * NL_front;
+  specular                = 0;
+}
+
+//--------------------------------------------------------------------------------------------------
+void EvaluateDynamicLights(in     float3 ws_pos,
+                           in     float3 ws_nrm,
+                           in     float2 screen_uvs,
+                           in     float  ldepth_exp,
+                           inout  float3 dynamic_diffuse,
+                           inout  float3 dynamic_specular)
+{
+  uint   src_index        = ScreenUVsToLLLIndex(screen_uvs);                     
+  uint   first_offset     = g_LightStartOffsetView[ src_index ];      
+
+  // Decode the first element index
+  uint   element_index    = (first_offset &  0xFFFFFF);         
+
+  // Iterate over the light linked list
+  while( element_index != 0xFFFFFF ) 
+  {                                                                       
+    // Fetch
+    LightFragmentLink element  = g_LightFragmentLinkedView[element_index]; 
+
+    // Update the next element index
+    element_index              = (element.m_IndexNext &  0xFFFFFF); 
+
+    float light_depth_max      = f16tof32(element.m_DepthInfo >>  0);
+    float light_depth_min      = f16tof32(element.m_DepthInfo >> 16);
+
+    // Do depth bounds check 
+    if( (ldepth_exp > light_depth_max) || (ldepth_exp < light_depth_min) )
+    {
+      continue;
+    } 
+
+    // Decode the light index
+    uint          light_idx   = (element.m_IndexNext >>     24);
+
+    // Access the light environment                
+    GPULightEnv   light_env   = g_LightEnvs[ light_idx ];
+
+    EvaluatePunctualLight(light_env, ws_pos, ws_nrm, dynamic_diffuse, dynamic_specular);
+  }
+
+  // Done
+}
+
+//--------------------------------------------------------------------------------------------------
+float3 EvaluateMainLight(in float3 ws_pos,
+                         in float3 ws_nrm)
+{
+  float4 vShadowMapTextureCoordViewSpace = TransformPosition(ws_pos, m_mShadow );
+
+  float4 vShadowMapTextureCoord          = 0.0f;
+  float4 vShadowMapTextureCoord_blend    = 0.0f;
+  
+  float4 vVisualizeCascadeColor = float4(0.0f,0.0f,0.0f,1.0f);
+  
+  float  fPercentLit = 0.0f;
+  float  fPercentLit_blend = 0.0f;
+  
+  float  fUpTextDepthWeight=0;
+  float  fRightTextDepthWeight=0;
+  float  fUpTextDepthWeight_blend=0;
+  float  fRightTextDepthWeight_blend=0;
+  
+  int    iBlurRowSize  = m_iPCFBlurForLoopEnd - m_iPCFBlurForLoopStart;
+         iBlurRowSize *= iBlurRowSize;
+  float  fBlurRowSize  = (float)iBlurRowSize;
+      
+  int    iCascadeFound        = 0;     
+  int    iCurrentCascadeIndex = 0;
+    
+  for( int iCascadeIndex = 0; iCascadeIndex < CASCADE_COUNT_FLAG && iCascadeFound == 0; ++iCascadeIndex ) 
+  {
+      vShadowMapTextureCoord = vShadowMapTextureCoordViewSpace * m_vCascadeScale[iCascadeIndex];
+      vShadowMapTextureCoord += m_vCascadeOffset[iCascadeIndex];
+  
+      if ( min( vShadowMapTextureCoord.x, vShadowMapTextureCoord.y ) > m_fMinBorderPadding
+        && max( vShadowMapTextureCoord.x, vShadowMapTextureCoord.y ) < m_fMaxBorderPadding )
+      { 
+          iCurrentCascadeIndex = iCascadeIndex;   
+          iCascadeFound        = 1; 
+      }
+  }
+      
+  float  fBlendBetweenCascadesAmount     = 1.0f;
+  float  fCurrentPixelsBlendBandLocation = 1.0f;
+       
+  ComputeCoordinatesTransform( iCurrentCascadeIndex,   vShadowMapTextureCoord,  vShadowMapTextureCoordViewSpace );     
+  CalculatePCFPercentLit (     vShadowMapTextureCoord, fRightTextDepthWeight,   fUpTextDepthWeight, fBlurRowSize, fPercentLit );
+      
+  // Some ambient-like lighting.
+  float3 fLighting         = saturate( dot( vLightDir1 , ws_nrm ) )*0.05f +
+                             saturate( dot( vLightDir2 , ws_nrm ) )*0.05f +
+                             saturate( dot( vLightDir3 , ws_nrm ) )*0.05f +
+                             saturate( dot( vLightDir4 , ws_nrm ) )*0.05f ;
+                         
+  float3 vShadowLighting    = fLighting * 0.5f;
+  fLighting                += saturate( dot(m_vLightDir, ws_nrm ) ) * float3(0.411764741f, 0.411764741f, 0.411764741f);
+                           
+  fLighting                 = lerp( vShadowLighting, fLighting, fPercentLit );
+  
+  // Done
+  return fLighting;
+}

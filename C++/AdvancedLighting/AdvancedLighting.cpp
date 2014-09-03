@@ -27,7 +27,8 @@ CFirstPersonCamera          g_ViewerCamera;
 CFirstPersonCamera          g_LightCamera;          
 
 CDXUTSDKMesh                g_MeshPowerPlant; 
- 
+CDXUTSDKMesh                g_TeapotMesh;
+
 // DXUT GUI stuff     
 CD3DSettingsDlg             g_D3DSettingsDlg;       // Device settings dialog
 CDXUTDialog                 g_HUD;                  // manages the 3D   
@@ -353,11 +354,12 @@ void CALLBACK OnD3D11DestroyDevice( void* pUserContext )
   UNREFERENCED_PARAMETER(pUserContext);
 
   g_MeshPowerPlant.Destroy();
+  g_TeapotMesh.Destroy();
   DestroyD3DComponents();
 }
 
 //--------------------------------------------------------------------------------------
-// Create any D3D11 resources that aren't dependant on the back buffer
+// Create any D3D11 resources that aren't dependent on the back buffer
 //--------------------------------------------------------------------------------------
 HRESULT CALLBACK OnD3D11CreateDevice( ID3D11Device* pd3dDevice, const DXGI_SURFACE_DESC* pBackBufferSurfaceDesc,
                                       void* pUserContext )
@@ -367,6 +369,7 @@ HRESULT CALLBACK OnD3D11CreateDevice( ID3D11Device* pd3dDevice, const DXGI_SURFA
 
   HRESULT hr = S_OK;
   V_RETURN( g_MeshPowerPlant.Create( pd3dDevice, L"powerplant\\powerplant.sdkmesh" ) );
+  V_RETURN( g_TeapotMesh.Create(     pd3dDevice, L"teapot\\teapot.sdkmesh" ) );
 
   return CreateD3DComponents( pd3dDevice );
 }
@@ -451,6 +454,9 @@ void CALLBACK OnD3D11FrameRender( ID3D11Device* pd3dDevice, ID3D11DeviceContext*
   // Composite the scene
   g_Scene.CompositeScene(pRTV);
   
+  // Blended elements
+  g_Scene.DrawAlpha(&g_TeapotMesh);
+
   // End the frame
   g_Scene.EndFrame(pRTV);
   

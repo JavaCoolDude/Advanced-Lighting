@@ -9,7 +9,7 @@
 #pragma once
 
 #include "RenderTarget.h"
-#include "ShaderUtil.h" 
+#include "ShaderShared.h" 
 
 #define ALIGN_16(n)     ((((size_t)(n)) + 15 ) & ~15 )
 
@@ -179,11 +179,13 @@ public:
                         
     HRESULT RenderShadowCascades(CDXUTSDKMesh* pMesh);
 
-    HRESULT RenderGBuffer(CDXUTSDKMesh*       pMesh);
+    HRESULT RenderGBuffer(CDXUTSDKMesh* pMesh);
      
     HRESULT ProcessLinkedList();
 
     HRESULT CompositeScene(ID3D11RenderTargetView* prtvBackBuffer);
+
+    HRESULT DrawAlpha(CDXUTSDKMesh* pMesh);
 
     // This runs last thing per frame
     HRESULT EndFrame(ID3D11RenderTargetView*   prtvBackBuffer);
@@ -262,19 +264,19 @@ private:
     ID3D11InputLayout*                  m_pVertexLayoutLight;
     ID3D11InputLayout*                  m_pVertexLayoutMesh;
 
-    VertexShader                        m_pvsRenderOrthoShadow;
+    VertexShader                        m_pvsRenderSimple;
     VertexShader                        m_pvsRenderLight; 
     VertexShader                        m_pvsRenderScene; 
     VertexShader                        m_pvsRender2D; 
 
-    PixelShader                         m_ppsTriangleFace; 
-    PixelShader                         m_ppsComposite; 
     PixelShader                         m_ppsInsertLightNoCulling; 
     PixelShader                         m_ppsInsertLightBackFace; 
     PixelShader                         m_ppsDebugLight; 
+    PixelShader                         m_ppsComposite; 
     PixelShader                         m_ppsClearLLL; 
     PixelShader                         m_ppsGBuffer; 
     PixelShader                         m_ppsTexture; 
+    PixelShader                         m_ppsLit3D;    
 
     LightLinkedListTarget               m_LLLTarget;
 
@@ -297,6 +299,7 @@ private:
     ID3D11RasterizerState*              m_prsShadow; 
 
     ID3D11BlendState*                   m_pbsDisableRGBA;
+    ID3D11BlendState*                   m_pbsAlpha;
     ID3D11BlendState*                   m_pbsNone;
 
     D3D11_VIEWPORT                      m_RenderVP[MAX_CASCADES];

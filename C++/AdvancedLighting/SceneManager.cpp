@@ -254,15 +254,14 @@ HRESULT SceneManager::RenderShadowCascades( CDXUTSDKMesh* pMesh)
     V( m_pd3dDeviceContext->Map( m_pcbSimpleCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource ) );
     auto simple_cb = reinterpret_cast<SimpleCB*>( MappedResource.pData );
     
-    XMStoreFloat4x4( &simple_cb->m_mSimpleTransform, matWorldViewProjection );
+    XMStoreFloat4x4( &simple_cb->g_SimpleWorldViewProj, matWorldViewProjection );
     m_pd3dDeviceContext->Unmap( m_pcbSimpleCB, 0 );
     
     m_pd3dDeviceContext->IASetInputLayout( m_pVertexLayoutMesh );
     
     // No pixel shader is bound as we're only writing out depth.
-    m_pd3dDeviceContext->VSSetShader( m_pvsRenderOrthoShadow.m_Shader, nullptr, 0 );
-    m_pd3dDeviceContext->PSSetShader( nullptr, nullptr, 0 );
-    m_pd3dDeviceContext->GSSetShader( nullptr, nullptr, 0 );
+    m_pd3dDeviceContext->VSSetShader( m_pvsRenderSimple.m_Shader, nullptr, 0 );
+    m_pd3dDeviceContext->PSSetShader( nullptr, nullptr, 0 ); 
     
     m_pd3dDeviceContext->VSSetConstantBuffers( CB_SIMPLE, 1, &m_pcbSimpleCB );
     
@@ -333,11 +332,28 @@ HRESULT SceneManager::RenderGBuffer( CDXUTSDKMesh* pMesh)
   m_pd3dDeviceContext->OMSetBlendState( m_pbsNone, g_BlendFactors, 0xFFFFFFFF);
   m_pd3dDeviceContext->OMSetDepthStencilState(m_pdsDefault, 0xFF);
    
+  // Transforms
+  {
+    D3D11_MAPPED_SUBRESOURCE MappedResource;
+    XMMATRIX                 matCameraProj          = m_pViewerCamera->GetProjMatrix();
+    XMMATRIX                 matCameraView          = m_pViewerCamera->GetViewMatrix();
+    XMMATRIX                 matWorldViewProjection = matCameraView * matCameraProj;
+
+    m_pd3dDeviceContext->Map( m_pcbSimpleCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource );
+    auto simple_cb = reinterpret_cast<SimpleCB*>( MappedResource.pData );
+  
+    XMStoreFloat4x4( &simple_cb->g_SimpleWorldViewProj, matWorldViewProjection );
+    XMStoreFloat4x4( &simple_cb->g_SimpleWorld,         XMMatrixIdentity()     ); 
+
+    m_pd3dDeviceContext->Unmap( m_pcbSimpleCB, 0 );
+    m_pd3dDeviceContext->VSSetConstantBuffers( CB_SIMPLE, 1, &m_pcbSimpleCB );
+  }
+
   SetViewport(m_pViewerCamera, &m_MainVP);
   m_pd3dDeviceContext->RSSetState( m_prsCullBackFaces );
 
   m_pd3dDeviceContext->IASetInputLayout( m_pVertexLayoutMesh );
-
+ 
   m_pd3dDeviceContext->VSSetShader( m_pvsRenderScene.m_Shader, nullptr, 0 );
   m_pd3dDeviceContext->PSSetShader( m_ppsGBuffer.m_Shader,     nullptr, 0 );
 
@@ -414,7 +430,7 @@ HRESULT SceneManager::ProcessLinkedList()
     DrawQuad(0, 0, lll_vp.Width, lll_vp.Height);
 
     // Clear the texture
-    ClearTexture( 0 );
+    ClearTexture( TEX_DEPTH );
   }
 
   // Fill the light linked list
@@ -559,7 +575,7 @@ HRESULT SceneManager::ProcessLinkedList()
         // Fill the instance information
         { 
           XMMATRIX light_trans = XMMatrixTranslation(light_env->m_WorldPos.x, light_env->m_WorldPos.y, light_env->m_WorldPos.z);
-          XMStoreFloat4x4( &light_inst->m_Transform, light_trans * matViewProjection );
+          XMStoreFloat4x4( &light_inst->m_WorldViewProj, light_trans * matViewProjection );
           light_inst->m_LightIndex  = light_idx;
           light_inst->m_Radius      = light_env->m_Radius;
         } 
@@ -590,10 +606,11 @@ HRESULT SceneManager::ProcessLinkedList()
   
         {  
           XMMATRIX light_trans = XMMatrixTranslation(light_env->m_WorldPos.x, light_env->m_WorldPos.y, light_env->m_WorldPos.z);
-          XMStoreFloat4x4( &simple_cb->m_mSimpleTransform, light_trans * matViewProjection );
-          simple_cb->m_mSimpleLightIndex  = light_idx; 
-          simple_cb->m_mSimpleRadius      = light_env->m_Radius;
+          XMStoreFloat4x4( &simple_cb->g_SimpleWorldViewProj, light_trans * matViewProjection );
+          simple_cb->g_SimpleLightIndex  = light_idx; 
+          simple_cb->g_SimpleRadius      = light_env->m_Radius;
         }
+
         m_pd3dDeviceContext->Unmap( m_pcbSimpleCB, 0 );
         m_pd3dDeviceContext->VSSetConstantBuffers( CB_LIGHT_INSTANCES, 1, &m_pcbSimpleCB );
 
@@ -667,14 +684,14 @@ HRESULT SceneManager::CompositeScene(ID3D11RenderTargetView* prtvBackBuffer)
     XMStoreFloat4x4( &shadow_data->m_mShadow, m_matShadowView );
     for(int index=0; index < CASCADE_COUNT_FLAG; ++index ) 
     {
-        XMMATRIX mShadowTexture = m_matShadowProj[index] * matTextureScale * matTextureTranslation;
-        shadow_data->m_vCascadeScale[index].x = XMVectorGetX( mShadowTexture.r[0] );
-        shadow_data->m_vCascadeScale[index].y = XMVectorGetY( mShadowTexture.r[1] );
-        shadow_data->m_vCascadeScale[index].z = XMVectorGetZ( mShadowTexture.r[2] );
-        shadow_data->m_vCascadeScale[index].w = 1;
-  
-        XMStoreFloat3( reinterpret_cast<XMFLOAT3*>( &shadow_data->m_vCascadeOffset[index] ), mShadowTexture.r[3] );
-        shadow_data->m_vCascadeOffset[index].w = 0;
+      XMMATRIX mShadowTexture = m_matShadowProj[index] * matTextureScale * matTextureTranslation;
+      shadow_data->m_vCascadeScale[index].x = XMVectorGetX( mShadowTexture.r[0] );
+      shadow_data->m_vCascadeScale[index].y = XMVectorGetY( mShadowTexture.r[1] );
+      shadow_data->m_vCascadeScale[index].z = XMVectorGetZ( mShadowTexture.r[2] );
+      shadow_data->m_vCascadeScale[index].w = 1;
+      
+      XMStoreFloat3( reinterpret_cast<XMFLOAT3*>( &shadow_data->m_vCascadeOffset[index] ), mShadowTexture.r[3] );
+      shadow_data->m_vCascadeOffset[index].w = 0;
     }
   
     // The border padding values keep the pixel shader from reading the borders during PCF filtering.
@@ -692,8 +709,7 @@ HRESULT SceneManager::CompositeScene(ID3D11RenderTargetView* prtvBackBuffer)
     m_pd3dDeviceContext->Unmap( m_pcbShadowCB, 0 );
   }
   
-  // Set the constant buffer
-  m_pd3dDeviceContext->VSSetConstantBuffers( CB_SHADOW_DATA, 1, &m_pcbShadowCB);
+  // Set the constant buffer 
   m_pd3dDeviceContext->PSSetConstantBuffers( CB_SHADOW_DATA, 1, &m_pcbShadowCB);
   
   // Set the viewport
@@ -794,26 +810,129 @@ HRESULT SceneManager::CompositeScene(ID3D11RenderTargetView* prtvBackBuffer)
   // Clear the textures
   ClearTextures(0, 6);
   
+  m_pd3dDeviceContext->OMSetRenderTargets( 1, &prtvBackBuffer, m_GBufferRT.GetDSView() );
+
   // Done
   return hr;
 }
 
 //--------------------------------------------------------------------------------------
+HRESULT SceneManager::DrawAlpha(CDXUTSDKMesh* pMesh)
+{
+  XMMATRIX        matCameraProj     = m_pViewerCamera->GetProjMatrix();
+  XMMATRIX        matCameraView     = m_pViewerCamera->GetViewMatrix();
+  XMMATRIX        matViewProjection = matCameraView * matCameraProj;
+
+  BoundingFrustum fproj( matCameraProj );
+  BoundingFrustum frustum;
+
+  // Transform the frustum into world space
+  fproj.Transform(frustum, m_pViewerCamera->GetWorldMatrix() );
+
+  // Enable alpha blending but no depth write (testing is still on)
+  m_pd3dDeviceContext->OMSetBlendState( m_pbsAlpha, g_BlendFactors, 0xFFFFFFFF);
+  m_pd3dDeviceContext->OMSetDepthStencilState(m_pdsNoWrite, 0xFF);
+
+  m_pd3dDeviceContext->RSSetState( m_prsCullBackFaces );
+
+  m_pd3dDeviceContext->IASetInputLayout( m_pVertexLayoutMesh );
+
+  m_pd3dDeviceContext->VSSetShader( m_pvsRenderScene.m_Shader,  nullptr, 0 );
+  m_pd3dDeviceContext->PSSetShader( m_ppsLit3D.m_Shader,        nullptr, 0 );
+
+  SetSampler( SAM_LINEAR, m_pSamLinear );
+  SetSampler( SAM_POINT,  m_pSamPoint  );
+ 
+  // Unique seed to guarantee same values over and over again
+  srand(0xF8E732AC);
+   
+  float spacing       = 20.0f;
+  float base_scale    = 2.5f;
+  float base_height   = base_scale * 1.5f;
+   
+  float x_bound       = XMVectorGetX(m_vSceneAABBMin);
+  float z_bound       = XMVectorGetZ(m_vSceneAABBMin);
+
+  D3D11_MAPPED_SUBRESOURCE MappedResource;
+    
+  // Create the lights environments
+  for(float x = XMVectorGetX(m_vSceneAABBMax) - spacing; x > x_bound; x -= spacing)
+  {
+    for(float z = XMVectorGetZ(m_vSceneAABBMax) - spacing; (z > z_bound); z -= spacing)
+    { 
+      float     scale   = Lerpf(base_scale, base_scale* 2, RandFloatNormalized());
+      float3    center; 
+                        
+      center.x               = x           + Lerpf(-base_scale, base_scale, RandFloatNormalized());
+      center.y               = base_height + scale * Lerpf(-0.15f, 0.15f,   RandFloatNormalized());
+      center.z               = z           + Lerpf( base_scale,-base_scale, RandFloatNormalized());
+ 
+      XMMATRIX   scaling     = XMMatrixScaling(scale, scale, scale);
+      XMMATRIX   rotation    = XMMatrixRotationRollPitchYaw(0, XM_2PI * RandFloatNormalized(), 0);
+      XMMATRIX   translation = XMMatrixTranslation(center.x, center.y, center.z);
+      XMMATRIX   matWorld    = scaling * rotation * translation;
+
+      // Do the frustum test
+      if( frustum.Intersects(BoundingSphere(center, scale *1.5f)) == true)
+      {          
+        m_pd3dDeviceContext->Map( m_pcbSimpleCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource );
+        auto simple_cb = reinterpret_cast<SimpleCB*>( MappedResource.pData );
+
+        XMStoreFloat4x4( &simple_cb->g_SimpleWorldViewProj, matWorld * matViewProjection );
+        XMStoreFloat4x4( &simple_cb->g_SimpleWorld,         matWorld                     ); 
+
+        m_pd3dDeviceContext->Unmap( m_pcbSimpleCB, 0 );
+        m_pd3dDeviceContext->VSSetConstantBuffers( CB_SIMPLE, 1, &m_pcbSimpleCB );
+        pMesh->Render( m_pd3dDeviceContext, 0, 1 );
+      }
+    }
+  }
+
+  // Disable blending
+  m_pd3dDeviceContext->OMSetBlendState( m_pbsNone, g_BlendFactors, 0xFFFFFFFF);
+
+  // Reset depth stencil state
+  m_pd3dDeviceContext->OMSetDepthStencilState(m_pdsDefault, 0xFF);
+
+  // Done
+  return S_OK;
+}
+
+//--------------------------------------------------------------------------------------
 void SceneManager::SetViewport(CFirstPersonCamera* pViewerCamera, D3D11_VIEWPORT* vp)
 {
-  XMMATRIX matCameraProj          = pViewerCamera->GetProjMatrix();
-  XMMATRIX matCameraView          = pViewerCamera->GetViewMatrix();
-  XMMATRIX matWorldViewProjection = matCameraView * matCameraProj;
+  BoundingFrustum bounding_frustum;
+  BoundingFrustum::CreateFromMatrix(bounding_frustum, m_pViewerCamera->GetProjMatrix());
+
+  XMFLOAT3        corners[8];
+  bounding_frustum.GetCorners( corners );
+
+  uint32_t kFrsutumCornerLeftTop     = 4;
+  uint32_t kFrsutumCornerRightBottom = 6;
 
   D3D11_MAPPED_SUBRESOURCE MappedResource;
   HRESULT                  hr = S_OK;
 
   V( m_pd3dDeviceContext->Map( m_pcbFrameCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource ) );
   auto pcbFrame = reinterpret_cast<FrameCB*>( MappedResource.pData );
+   
+  XMStoreFloat4x4(&pcbFrame->m_mViewToWorld, pViewerCamera->GetWorldMatrix());
+
+  GetScaleOffset( vp->TopLeftX - g_PixelOffset, vp->Width  - g_PixelOffset,  0.f,  1.f, &pcbFrame->m_vViewportToScreenUVs.x, &pcbFrame->m_vViewportToScreenUVs.z );
+  GetScaleOffset( vp->TopLeftY - g_PixelOffset, vp->Height - g_PixelOffset,  0.f,  1.f, &pcbFrame->m_vViewportToScreenUVs.y, &pcbFrame->m_vViewportToScreenUVs.w );
 
   GetScaleOffset( vp->TopLeftX - g_PixelOffset, vp->Width  - g_PixelOffset, -1.f,  1.f, &pcbFrame->m_vViewportToClip.x, &pcbFrame->m_vViewportToClip.z );
   GetScaleOffset( vp->TopLeftY - g_PixelOffset, vp->Height - g_PixelOffset,  1.f, -1.f, &pcbFrame->m_vViewportToClip.y, &pcbFrame->m_vViewportToClip.w );
 
+  float         ss_corner_x       = corners[kFrsutumCornerLeftTop    ].x/corners[kFrsutumCornerLeftTop    ].z;
+  float         ss_corner_y       = corners[kFrsutumCornerLeftTop    ].y/corners[kFrsutumCornerLeftTop    ].z;
+
+  pcbFrame->m_vScreenToView.x     = ss_corner_x;
+  pcbFrame->m_vScreenToView.y     = ss_corner_y;
+                                  
+  pcbFrame->m_vScreenToView.z     = corners[kFrsutumCornerRightBottom].x/corners[kFrsutumCornerRightBottom    ].z - ss_corner_x;
+  pcbFrame->m_vScreenToView.w     = corners[kFrsutumCornerRightBottom].y/corners[kFrsutumCornerRightBottom    ].z - ss_corner_y;
+                                  
   double                f_d       = pViewerCamera->GetFarClip();
   double                n_d       = pViewerCamera->GetNearClip();
   double                fac_a     = f_d/(f_d-n_d);
@@ -822,14 +941,12 @@ void SceneManager::SetViewport(CFirstPersonCamera* pViewerCamera, D3D11_VIEWPORT
   float                 fac_d     = 0.0f;
 
   pcbFrame->m_vLinearDepthConsts  = XMFLOAT4((float)fac_a, -(float)fac_b, -(float)fac_c, fac_d);
+
   pcbFrame->m_iLLLWidth           = m_LLLTarget.GetWidth();
   pcbFrame->m_iLLLHeight          = m_LLLTarget.GetHeight();
   pcbFrame->m_iLLLMaxAlloc        = m_LLLTarget.GetMaxLinkedElements();
   pcbFrame->m_fLightPushScale     = m_pViewerCamera->GetAspectRatio() / (2.0f * m_LLLTarget.GetWidth());
-
-  XMStoreFloat4x4( &pcbFrame->m_mWorldViewProj, matWorldViewProjection   );
-  XMStoreFloat4x4( &pcbFrame->m_mWorldView,     matCameraView            ); 
-  XMStoreFloat4x4( &pcbFrame->m_mWorld,         XMMatrixIdentity()       );
+  
   XMStoreFloat4(   &pcbFrame->m_vCameraPos,     pViewerCamera->GetEyePt());
 
   m_pd3dDeviceContext->Unmap( m_pcbFrameCB, 0 );

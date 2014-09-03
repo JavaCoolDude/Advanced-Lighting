@@ -422,6 +422,22 @@ HRESULT SceneManager::Init ( ID3D11Device*           pd3dDevice,
         V_RETURN( pd3dDevice->CreateBlendState(&desc, &m_pbsDisableRGBA) );
         DXUT_SetDebugName( m_pbsDisableRGBA, "BlendState m_pbsDisableRGBA" );
       }
+
+      {
+        D3D11_BLEND_DESC desc = { 0 };
+
+        desc.RenderTarget[0].BlendEnable           = true;                          // BOOL BlendEnable;
+        desc.RenderTarget[0].SrcBlend              = D3D11_BLEND_SRC_ALPHA;         // D3D11_BLEND SrcBlend;
+        desc.RenderTarget[0].DestBlend             = D3D11_BLEND_INV_SRC_ALPHA;     // D3D11_BLEND DestBlend;
+        desc.RenderTarget[0].BlendOp               = D3D11_BLEND_OP_ADD;            // D3D11_BLEND_OP BlendOp;
+        desc.RenderTarget[0].SrcBlendAlpha         = D3D11_BLEND_SRC_ALPHA;         // D3D11_BLEND SrcBlendAlpha;
+        desc.RenderTarget[0].DestBlendAlpha        = D3D11_BLEND_INV_SRC_ALPHA;     // D3D11_BLEND DestBlendAlpha;
+        desc.RenderTarget[0].BlendOpAlpha          = D3D11_BLEND_OP_ADD;            // D3D11_BLEND_OP BlendOpAlpha;
+        desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;  // UINT8 RenderTargetWriteMask;
+
+        V_RETURN( pd3dDevice->CreateBlendState(&desc, &m_pbsAlpha) );
+        DXUT_SetDebugName( m_pbsAlpha, "BlendState m_pbsAlpha" );
+      }
     }
 
 
@@ -549,12 +565,11 @@ HRESULT   SceneManager::ReloadShaders()
 {
   HRESULT hr = S_OK;
 
-  m_pvsRenderOrthoShadow.Release();
+  m_pvsRenderSimple.Release();
   m_pvsRenderScene.Release();      
   m_pvsRenderLight.Release();      
   m_pvsRender2D.Release();         
   
-  m_ppsTriangleFace.Release();     
   m_ppsComposite.Release();        
   m_ppsInsertLightNoCulling.Release(); 
   m_ppsInsertLightBackFace.Release();  
@@ -562,20 +577,21 @@ HRESULT   SceneManager::ReloadShaders()
   m_ppsClearLLL.Release();         
   m_ppsTexture.Release();          
   m_ppsGBuffer.Release();  
+  m_ppsLit3D.Release();     
           
-  V_RETURN( CreateVertexShader(&m_pvsRenderOrthoShadow,     m_pd3dDevice, L"Shaders.hlsl",  "VSMainShadow"));
+  V_RETURN( CreateVertexShader(&m_pvsRenderSimple,          m_pd3dDevice, L"Shaders.hlsl",  "VSMainSimple"));
   V_RETURN( CreateVertexShader(&m_pvsRenderScene,           m_pd3dDevice, L"Shaders.hlsl",  "VSMainScene" ));
   V_RETURN( CreateVertexShader(&m_pvsRenderLight,           m_pd3dDevice, L"Shaders.hlsl",  "VSMainLight" ));
   V_RETURN( CreateVertexShader(&m_pvsRender2D,              m_pd3dDevice, L"Shaders.hlsl",  "VSMain2D"    ));
                                                             
-  V_RETURN( CreatePixelShader( &m_ppsTriangleFace,          m_pd3dDevice, L"Shaders.hlsl",  "PSTriangleFace"  ));
-  V_RETURN( CreatePixelShader( &m_ppsComposite,             m_pd3dDevice, L"Shaders.hlsl",  "PSComposite"     ));
+  V_RETURN( CreatePixelShader( &m_ppsLit3D,                 m_pd3dDevice, L"Shaders.hlsl",  "PSLit3D"                ));
+  V_RETURN( CreatePixelShader( &m_ppsComposite,             m_pd3dDevice, L"Shaders.hlsl",  "PSComposite"            ));
   V_RETURN( CreatePixelShader( &m_ppsInsertLightNoCulling,  m_pd3dDevice, L"Shaders.hlsl",  "PSInsertLightNoCulling" ));
   V_RETURN( CreatePixelShader( &m_ppsInsertLightBackFace,   m_pd3dDevice, L"Shaders.hlsl",  "PSInsertLightBackFace"  ));
-  V_RETURN( CreatePixelShader( &m_ppsDebugLight,            m_pd3dDevice, L"Shaders.hlsl",  "PSDebugLight"    ));
-  V_RETURN( CreatePixelShader( &m_ppsClearLLL,              m_pd3dDevice, L"Shaders.hlsl",  "PSClearLLLEighth"));
-  V_RETURN( CreatePixelShader( &m_ppsTexture,               m_pd3dDevice, L"Shaders.hlsl",  "PSTexture"       ));
-  V_RETURN( CreatePixelShader( &m_ppsGBuffer,               m_pd3dDevice, L"Shaders.hlsl",  "PSGBuffer"       ));
+  V_RETURN( CreatePixelShader( &m_ppsDebugLight,            m_pd3dDevice, L"Shaders.hlsl",  "PSDebugLight"           ));
+  V_RETURN( CreatePixelShader( &m_ppsClearLLL,              m_pd3dDevice, L"Shaders.hlsl",  "PSClearLLLEighth"       ));
+  V_RETURN( CreatePixelShader( &m_ppsTexture,               m_pd3dDevice, L"Shaders.hlsl",  "PSTexture"              ));
+  V_RETURN( CreatePixelShader( &m_ppsGBuffer,               m_pd3dDevice, L"Shaders.hlsl",  "PSGBuffer"              ));
 
   return hr;
 }
@@ -656,6 +672,7 @@ HRESULT SceneManager::ReleaseResources()
   SAFE_RELEASE( m_prsShadow         );
   
   SAFE_RELEASE( m_pbsDisableRGBA );
+  SAFE_RELEASE( m_pbsAlpha       )
   SAFE_RELEASE( m_pbsNone        );
   
   m_CascadedShadowMapRT.Release();
@@ -663,13 +680,13 @@ HRESULT SceneManager::ReleaseResources()
   
   m_LLLTarget.Release();
   
-  m_pvsRenderOrthoShadow.Release();
+  m_pvsRenderSimple.Release();
   m_pvsRenderLight.Release();
   m_pvsRenderScene.Release();
   m_pvsRender2D.Release();
   
-  m_ppsTriangleFace.Release();
   m_ppsComposite.Release();
+  m_ppsLit3D.Release();
 
   m_ppsInsertLightNoCulling.Release(); 
   m_ppsInsertLightBackFace.Release(); 

@@ -386,9 +386,10 @@
     <ClCompile Include="RenderTarget.cpp" />
     <ClCompile Include="SceneManager.cpp" />
     <ClCompile Include="SceneResources.cpp" />
+    <ClInclude Include="ShaderUtil.h" />
     <ClInclude Include="RenderTarget.h" />
     <CLInclude Include="SceneManager.h" />
-    <ClInclude Include="ShaderUtil.h" />
+    <ClInclude Include="ShaderShared.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders.hlsl" />
