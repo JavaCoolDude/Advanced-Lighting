@@ -79,147 +79,179 @@ HRESULT SceneManager::OnResize(uint32_t width, uint32_t height)
 HRESULT SceneManager::InitFrame ( CFirstPersonCamera*     pViewerCamera,
                                   CFirstPersonCamera*     pLightCamera  ) 
 {   
-    // Reset the scratch memory
-    m_ScratchOffset                  = 0;
+  m_pViewerCamera                  = pViewerCamera;
+  m_pLightCamera                   = pLightCamera ;
+  
+  XMMATRIX matViewCameraProjection = pViewerCamera->GetProjMatrix();
+  XMMATRIX matViewCameraView       = pViewerCamera->GetViewMatrix();
+  XMMATRIX matLightCameraView      = pLightCamera->GetViewMatrix();
+  
+  XMMATRIX matInverseViewCamera    = XMMatrixInverse(nullptr,  matViewCameraView );
+  
+  m_matShadowView = matLightCameraView;
+     
+  m_GPULightEnvAlloc.BeginFrame( m_pd3dDeviceContext );
+  m_DynamicVB.BeginFrame(m_pd3dDeviceContext); 
 
-    XMMATRIX matViewCameraProjection = pViewerCamera->GetProjMatrix();
-    XMMATRIX matViewCameraView       = pViewerCamera->GetViewMatrix();
-    XMMATRIX matLightCameraView      = pLightCamera->GetViewMatrix();
+  // Reset the scratch memory
+  m_ScratchOffset                  = 0;
+      
+  // Convert from min max representation to center extents representation.
+  // This will make it easier to pull the points out of the transformation.
+  XMVECTOR vSceneCenter   = m_vSceneAABBMin + m_vSceneAABBMax;
+           vSceneCenter  *= g_vHalfVector;
+  XMVECTOR vSceneExtents  = m_vSceneAABBMax - m_vSceneAABBMin;
+           vSceneExtents *= g_vHalfVector;    
+  
+  XMVECTOR vSceneAABBPointsLightSpace[8];
 
-    XMMATRIX matInverseViewCamera    = XMMatrixInverse( nullptr,  matViewCameraView );
+  // Convert the center and extents of an AABB into 8 points
+  {
+    const XMVECTORF32 vExtentsMap[] = 
+    { 
+      {1.0f, 1.0f, -1.0f, 1.0f}, 
+      {-1.0f, 1.0f, -1.0f, 1.0f}, 
+      {1.0f, -1.0f, -1.0f, 1.0f}, 
+      {-1.0f, -1.0f, -1.0f, 1.0f}, 
+      {1.0f, 1.0f, 1.0f, 1.0f}, 
+      {-1.0f, 1.0f, 1.0f, 1.0f}, 
+      {1.0f, -1.0f, 1.0f, 1.0f}, 
+      {-1.0f, -1.0f, 1.0f, 1.0f} 
+    };
 
-    m_matShadowView                  = matLightCameraView;
-
-    m_GPULightEnvAlloc.BeginFrame( m_pd3dDeviceContext );
-    m_DynamicVB.BeginFrame(m_pd3dDeviceContext); 
-
-    m_pViewerCamera = pViewerCamera;
-    m_pLightCamera  = pLightCamera ;
-
-    // Convert from min max representation to center extents representation.
-    // This will make it easier to pull the points out of the transformation.
-    BoundingBox bb;
-    BoundingBox::CreateFromPoints( bb, m_vSceneAABBMin, m_vSceneAABBMax );
-
-    XMFLOAT3 tmp[8];
-    bb.GetCorners( tmp );
-
-    // Transform the scene AABB to Light space.
-    XMVECTOR vSceneAABBPointsLightSpace[8];
-    for( int index =0; index < 8; ++index ) 
+    for( INT index = 0; index < 8; ++index ) 
     {
-        XMVECTOR v = XMLoadFloat3( &tmp[index] );
-        vSceneAABBPointsLightSpace[index] = XMVector3Transform( v, matLightCameraView ); 
+      vSceneAABBPointsLightSpace[index] = XMVectorMultiplyAdd(vExtentsMap[index], vSceneExtents, vSceneCenter ); 
+    }
+  }
+   
+  // Transform the scene AABB to Light space.
+  for( int index =0; index < 8; ++index ) 
+  {
+      vSceneAABBPointsLightSpace[index] = XMVector4Transform( vSceneAABBPointsLightSpace[index], matLightCameraView ); 
+  }
+  
+  FLOAT fFrustumIntervalBegin, fFrustumIntervalEnd;
+  XMVECTOR vLightCameraOrthographicMin;  // light space frustum aabb 
+  XMVECTOR vLightCameraOrthographicMax;
+  FLOAT fCameraNearFarRange = m_pViewerCamera->GetFarClip() - m_pViewerCamera->GetNearClip();
+     
+  XMVECTOR vWorldUnitsPerTexel = g_vZero; 
+  
+  int m_iCascadePartitionsZeroToOne[8];
+  int m_iCascadePartitionsMax = 100;
+  
+  m_iCascadePartitionsZeroToOne[0] = 5;
+  m_iCascadePartitionsZeroToOne[1] = 15;
+  m_iCascadePartitionsZeroToOne[2] = 60;
+  m_iCascadePartitionsZeroToOne[3] = 100;
+  m_iCascadePartitionsZeroToOne[4] = 100;
+  m_iCascadePartitionsZeroToOne[5] = 100;
+  m_iCascadePartitionsZeroToOne[6] = 100;
+  m_iCascadePartitionsZeroToOne[7] = 100;
+  
+  fFrustumIntervalBegin            = 0.0f;
+
+  // We loop over the cascades to calculate the orthographic projection for each cascade.
+  for( INT iCascadeIndex=0; iCascadeIndex < CASCADE_COUNT_FLAG; ++iCascadeIndex ) 
+  { 
+    // Scale the intervals between 0 and 1. They are now percentages that we can scale with.
+    fFrustumIntervalEnd    = (FLOAT)m_iCascadePartitionsZeroToOne[ iCascadeIndex ];        
+    fFrustumIntervalBegin /= (FLOAT)m_iCascadePartitionsMax;
+    fFrustumIntervalEnd   /= (FLOAT)m_iCascadePartitionsMax;
+    fFrustumIntervalBegin  = fFrustumIntervalBegin * fCameraNearFarRange;
+    fFrustumIntervalEnd    = fFrustumIntervalEnd * fCameraNearFarRange;
+    XMVECTOR vFrustumPoints[8];
+    
+    // This function takes the began and end intervals along with the projection matrix and returns the 8
+    // points that represent the cascade Interval
+    CreateFrustumPointsFromCascadeInterval( fFrustumIntervalBegin, fFrustumIntervalEnd, 
+                                            matViewCameraProjection, vFrustumPoints );
+    
+    vLightCameraOrthographicMin = g_vFLTMAX;
+    vLightCameraOrthographicMax = g_vFLTMIN;
+    
+    XMVECTOR vTempTranslatedCornerPoint;
+    // This next section of code calculates the min and max values for the orthographic projection.
+    for( int icpIndex=0; icpIndex < 8; ++icpIndex ) 
+    {
+      // Transform the frustum from camera view space to world space.
+      vFrustumPoints[icpIndex]    = XMVector4Transform ( vFrustumPoints[icpIndex], matInverseViewCamera );
+      // Transform the point from world space to Light Camera Space.
+      vTempTranslatedCornerPoint  = XMVector4Transform ( vFrustumPoints[icpIndex], matLightCameraView );
+      // Find the closest point.
+      vLightCameraOrthographicMin = XMVectorMin ( vTempTranslatedCornerPoint, vLightCameraOrthographicMin );
+      vLightCameraOrthographicMax = XMVectorMax ( vTempTranslatedCornerPoint, vLightCameraOrthographicMax );
     }
     
-    FLOAT     fFrustumIntervalBegin, fFrustumIntervalEnd;
-    XMVECTOR  vLightCameraOrthographicMin;  // light space frustum aabb 
-    XMVECTOR  vLightCameraOrthographicMax;
-    FLOAT     fCameraNearFarRange = pViewerCamera->GetFarClip() - pViewerCamera->GetNearClip();
-       
-    XMVECTOR vWorldUnitsPerTexel = g_vZero; 
-
-    const float c_CascadePartitionsMax         = 100;
-    const float c_CascadePartitionsZeroToOne[] = { 5, 15, 60, 100, 100, 100, 100, 100 };
-  
-    // We loop over the cascades to calculate the orthographic projection for each cascade.
-    for( INT iCascadeIndex=0; iCascadeIndex < CASCADE_COUNT_FLAG; ++iCascadeIndex ) 
+    // This code removes the shimmering effect along the edges of shadows due to
+    // the light changing to fit the camera.
     {
-        // In the FIT_TO_SCENE technique the Cascades overlap each other.  In other words, interval 1 is covered by
-        // cascades 1 to 8, interval 2 is covered by cascades 2 to 8 and so forth.
-        fFrustumIntervalBegin = 0.0f;
+      // Fit the ortho projection to the cascades far plane and a near plane of zero. 
+      // Pad the projection to be the size of the diagonal of the Frustum partition. 
+      // 
+      // To do this, we pad the ortho transform so that it is always big enough to cover 
+      // the entire camera view frustum.
+      XMVECTOR vDiagonal = vFrustumPoints[0] - vFrustumPoints[6];
+      vDiagonal = XMVector3Length( vDiagonal );
+      
+      // The bound is the length of the diagonal of the frustum interval.
+      FLOAT fCascadeBound = XMVectorGetX( vDiagonal );
+      
+      // The offset calculated will pad the ortho projection so that it is always the same size 
+      // and big enough to cover the entire cascade interval.
+      XMVECTOR vBoarderOffset = ( vDiagonal - 
+                                  ( vLightCameraOrthographicMax - vLightCameraOrthographicMin ) ) 
+                                  * g_vHalfVector;
+      // Set the Z and W components to zero.
+      vBoarderOffset *= g_vMultiplySetzwToZero;
+      
+      // Add the offsets to the projection.
+      vLightCameraOrthographicMax += vBoarderOffset;
+      vLightCameraOrthographicMin -= vBoarderOffset;
+      
+      // The world units per texel are used to snap the shadow the orthographic projection
+      // to texel sized increments.  This keeps the edges of the shadows from shimmering.
+      FLOAT fWorldUnitsPerTexel = fCascadeBound / (float)CASCADE_BUFFER_SIZE;
+      vWorldUnitsPerTexel       = XMVectorSet( fWorldUnitsPerTexel, fWorldUnitsPerTexel, 0.0f, 0.0f ); 
+    } 
+    
+    float fLightCameraOrthographicMinZ = XMVectorGetZ( vLightCameraOrthographicMin );
+    
+    {    
+      // We snape the camera to 1 pixel increments so that moving the camera does not cause the shadows to jitter.
+      // This is a matter of integer dividing by the world space size of a texel
+      vLightCameraOrthographicMin /= vWorldUnitsPerTexel;
+      vLightCameraOrthographicMin = XMVectorFloor( vLightCameraOrthographicMin );
+      vLightCameraOrthographicMin *= vWorldUnitsPerTexel;
 
-        // Scale the intervals between 0 and 1. They are now percentages that we can scale with.
-        fFrustumIntervalEnd    = c_CascadePartitionsZeroToOne[iCascadeIndex];        
-        fFrustumIntervalBegin /= c_CascadePartitionsMax;
-        fFrustumIntervalEnd   /= c_CascadePartitionsMax;
-        fFrustumIntervalBegin  = fFrustumIntervalBegin * fCameraNearFarRange;
-        fFrustumIntervalEnd    = fFrustumIntervalEnd * fCameraNearFarRange;
-        
-        XMVECTOR vFrustumPoints[8];
-
-        // This function takes the began and end intervals along with the projection matrix and returns the 8
-        // points that represent the cascade Interval
-        CreateFrustumPointsFromCascadeInterval( fFrustumIntervalBegin, fFrustumIntervalEnd, matViewCameraProjection, vFrustumPoints );
-
-        vLightCameraOrthographicMin = g_vFLTMAX;
-        vLightCameraOrthographicMax = g_vFLTMIN;
-
-        XMVECTOR vTempTranslatedCornerPoint;
-        // This next section of code calculates the min and max values for the orthographic projection.
-        for( int icpIndex=0; icpIndex < 8; ++icpIndex ) 
-        {
-            // Transform the frustum from camera view space to world space.
-            vFrustumPoints[icpIndex]    = XMVector4Transform ( vFrustumPoints[icpIndex], matInverseViewCamera );
-            // Transform the point from world space to Light Camera Space.
-            vTempTranslatedCornerPoint  = XMVector4Transform ( vFrustumPoints[icpIndex], matLightCameraView );
-            // Find the closest point.
-            vLightCameraOrthographicMin = XMVectorMin ( vTempTranslatedCornerPoint, vLightCameraOrthographicMin );
-            vLightCameraOrthographicMax = XMVectorMax ( vTempTranslatedCornerPoint, vLightCameraOrthographicMax );
-        }
-
-        // This code removes the shimmering effect along the edges of shadows due to
-        // the light changing to fit the camera.
-        {
-            // Fit the ortho projection to the cascades far plane and a near plane of zero. 
-            // Pad the projection to be the size of the diagonal of the Frustum partition. 
-            // 
-            // To do this, we pad the ortho transform so that it is always big enough to cover 
-            // the entire camera view frustum.
-            XMVECTOR vDiagonal = vFrustumPoints[0] - vFrustumPoints[6];
-            vDiagonal = XMVector3Length( vDiagonal );
-            
-            // The bound is the length of the diagonal of the frustum interval.
-            FLOAT fCascadeBound = XMVectorGetX( vDiagonal );
-            
-            // The offset calculated will pad the ortho projection so that it is always the same size 
-            // and big enough to cover the entire cascade interval.
-            XMVECTOR vBoarderOffset = ( vDiagonal - 
-                                        ( vLightCameraOrthographicMax - vLightCameraOrthographicMin ) ) 
-                                        * g_vHalfVector;
-            // Set the Z and W components to zero.
-            vBoarderOffset *= g_vMultiplySetzwToZero;
-            
-            // Add the offsets to the projection.
-            vLightCameraOrthographicMax += vBoarderOffset;
-            vLightCameraOrthographicMin -= vBoarderOffset;
-
-            // The world units per texel are used to snap the shadow the orthographic projection
-            // to texel sized increments.  This keeps the edges of the shadows from shimmering.
-            FLOAT fWorldUnitsPerTexel = fCascadeBound / CASCADE_BUFFER_SIZE;
-            vWorldUnitsPerTexel       = XMVectorSet( fWorldUnitsPerTexel, fWorldUnitsPerTexel, 0.0f, 0.0f );
-        } 
-
-        {
-            // We snap the camera to 1 pixel increments so that moving the camera does not cause the shadows to jitter.
-            // This is a matter of integer dividing by the world space size of a texel
-            vLightCameraOrthographicMin /= vWorldUnitsPerTexel;
-            vLightCameraOrthographicMin = XMVectorFloor( vLightCameraOrthographicMin );
-            vLightCameraOrthographicMin *= vWorldUnitsPerTexel;
-            
-            vLightCameraOrthographicMax /= vWorldUnitsPerTexel;
-            vLightCameraOrthographicMax = XMVectorFloor( vLightCameraOrthographicMax );
-            vLightCameraOrthographicMax *= vWorldUnitsPerTexel;
-        }
- 
-        FLOAT fNearPlane = 0.0f;
-        FLOAT fFarPlane  = 10000.0f;
-
-        // By intersecting the light frustum with the scene AABB we can get a tighter bound on the near and far plane.
-        ComputeNearAndFar( fNearPlane, fFarPlane, vLightCameraOrthographicMin,    vLightCameraOrthographicMax, vSceneAABBPointsLightSpace );
-
-        // Create the orthographic projection for this cascade.
-        m_matShadowProj[ iCascadeIndex ] = XMMatrixOrthographicOffCenterLH( XMVectorGetX( vLightCameraOrthographicMin ), XMVectorGetX( vLightCameraOrthographicMax ), 
-                                                                            XMVectorGetY( vLightCameraOrthographicMin ),XMVectorGetY( vLightCameraOrthographicMax ),
-                                                                            fNearPlane, fFarPlane );
-        m_fCascadePartitionsFrustum[ iCascadeIndex ] = fFrustumIntervalEnd;
-    }  
-
-    // Set the viewport
-    SetViewport(pViewerCamera, &m_MainVP);
-
-    // Done
-    return S_OK;
+      vLightCameraOrthographicMax /= vWorldUnitsPerTexel;
+      vLightCameraOrthographicMax = XMVectorFloor( vLightCameraOrthographicMax );
+      vLightCameraOrthographicMax *= vWorldUnitsPerTexel;   
+    }
+    
+    FLOAT fNearPlane = 0.0f;
+    FLOAT fFarPlane  = 10000.0f;
+    
+    // By intersecting the light frustum with the scene AABB we can get a tighter bound on the near and far plane.
+    ComputeNearAndFar( fNearPlane, fFarPlane, vLightCameraOrthographicMin, 
+                       vLightCameraOrthographicMax, vSceneAABBPointsLightSpace );
+    
+    // Create the orthographic projection for this cascade. 
+    m_matShadowProj[ iCascadeIndex ] = XMMatrixOrthographicOffCenterLH(XMVectorGetX( vLightCameraOrthographicMin ), 
+                                                                       XMVectorGetX( vLightCameraOrthographicMax ), 
+                                                                       XMVectorGetY( vLightCameraOrthographicMin ), 
+                                                                       XMVectorGetY( vLightCameraOrthographicMax ), 
+                                                                       fNearPlane, fFarPlane );
+    
+    m_fCascadePartitionsFrustum[ iCascadeIndex ] = fFrustumIntervalEnd;
+  }
+  
+  // Set the viewport
+  SetViewport(pViewerCamera, &m_MainVP);
+  
+  // Done
+  return S_OK;
 }
 
 
@@ -1081,279 +1113,278 @@ void SceneManager::ComputeNearAndFar( FLOAT& fNearPlane,
                                       FXMVECTOR vLightCameraOrthographicMax, 
                                       XMVECTOR* pvPointsInCameraView ) 
 {
+  // Initialize the near and far planes
+  fNearPlane = FLT_MAX;
+  fFarPlane = -FLT_MAX;
 
-    // Initialize the near and far planes
-    fNearPlane = FLT_MAX;
-    fFarPlane = -FLT_MAX;
-    
-    Triangle triangleList[16];
-    INT iTriangleCnt = 1;
+  Triangle triangleList[16];
+  INT iTriangleCnt = 1;
 
-    triangleList[0].pt[0] = pvPointsInCameraView[0];
-    triangleList[0].pt[1] = pvPointsInCameraView[1];
-    triangleList[0].pt[2] = pvPointsInCameraView[2];
-    triangleList[0].culled = false;
+  triangleList[0].pt[0] = pvPointsInCameraView[0];
+  triangleList[0].pt[1] = pvPointsInCameraView[1];
+  triangleList[0].pt[2] = pvPointsInCameraView[2];
+  triangleList[0].culled = false;
 
-    // These are the indices used to tessellate an AABB into a list of triangles.
-    static const INT iAABBTriIndexes[] = 
+  // These are the indices used to tesselate an AABB into a list of triangles.
+  static const INT iAABBTriIndexes[] = 
+  {
+    0,1,2,  1,2,3,
+    4,5,6,  5,6,7,
+    0,2,4,  2,4,6,
+    1,3,5,  3,5,7,
+    0,1,4,  1,4,5,
+    2,3,6,  3,6,7 
+  };
+
+  INT iPointPassesCollision[3];
+
+  // At a high level: 
+  // 1. Iterate over all 12 triangles of the AABB.  
+  // 2. Clip the triangles against each plane. Create new triangles as needed.
+  // 3. Find the min and max z values as the near and far plane.
+
+  //This is easier because the triangles are in camera spacing making the collisions tests simple comparisions.
+
+  float fLightCameraOrthographicMinX = XMVectorGetX( vLightCameraOrthographicMin );
+  float fLightCameraOrthographicMaxX = XMVectorGetX( vLightCameraOrthographicMax ); 
+  float fLightCameraOrthographicMinY = XMVectorGetY( vLightCameraOrthographicMin );
+  float fLightCameraOrthographicMaxY = XMVectorGetY( vLightCameraOrthographicMax );
+
+  for( INT AABBTriIter = 0; AABBTriIter < 12; ++AABBTriIter ) 
+  {
+
+    triangleList[0].pt[0] = pvPointsInCameraView[ iAABBTriIndexes[ AABBTriIter*3 + 0 ] ];
+    triangleList[0].pt[1] = pvPointsInCameraView[ iAABBTriIndexes[ AABBTriIter*3 + 1 ] ];
+    triangleList[0].pt[2] = pvPointsInCameraView[ iAABBTriIndexes[ AABBTriIter*3 + 2 ] ];
+    iTriangleCnt = 1;
+    triangleList[0].culled = FALSE;
+
+    // Clip each invidual triangle against the 4 frustums.  When ever a triangle is clipped into new triangles, 
+    //add them to the list.
+    for( INT frustumPlaneIter = 0; frustumPlaneIter < 4; ++frustumPlaneIter ) 
     {
-        0,1,2,  1,2,3,
-        4,5,6,  5,6,7,
-        0,2,4,  2,4,6,
-        1,3,5,  3,5,7,
-        0,1,4,  1,4,5,
-        2,3,6,  3,6,7 
-    };
 
-    INT iPointPassesCollision[3];
+      FLOAT fEdge;
+      INT iComponent;
 
-    // At a high level: 
-    // 1. Iterate over all 12 triangles of the AABB.  
-    // 2. Clip the triangles against each plane. Create new triangles as needed.
-    // 3. Find the min and max z values as the near and far plane.
-    
-    //This is easier because the triangles are in camera spacing making the collisions tests simple comparisions.
-    
-    float fLightCameraOrthographicMinX = XMVectorGetX( vLightCameraOrthographicMin );
-    float fLightCameraOrthographicMaxX = XMVectorGetX( vLightCameraOrthographicMax ); 
-    float fLightCameraOrthographicMinY = XMVectorGetY( vLightCameraOrthographicMin );
-    float fLightCameraOrthographicMaxY = XMVectorGetY( vLightCameraOrthographicMax );
-    
-    for( INT AABBTriIter = 0; AABBTriIter < 12; ++AABBTriIter ) 
+      if( frustumPlaneIter == 0 ) 
+      {
+        fEdge = fLightCameraOrthographicMinX; // todo make float temp
+        iComponent = 0;
+      } 
+      else if( frustumPlaneIter == 1 ) 
+      {
+        fEdge = fLightCameraOrthographicMaxX;
+        iComponent = 0;
+      } 
+      else if( frustumPlaneIter == 2 ) 
+      {
+        fEdge = fLightCameraOrthographicMinY;
+        iComponent = 1;
+      } 
+      else 
+      {
+        fEdge = fLightCameraOrthographicMaxY;
+        iComponent = 1;
+      }
+
+      for( INT triIter=0; triIter < iTriangleCnt; ++triIter ) 
+      {
+        // We don't delete triangles, so we skip those that have been culled.
+        if( !triangleList[triIter].culled ) 
+        {
+          INT iInsideVertCount = 0;
+          XMVECTOR tempOrder;
+          // Test against the correct frustum plane.
+          // This could be written more compactly, but it would be harder to understand.
+
+          if( frustumPlaneIter == 0 ) 
+          {
+            for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
+            {
+              if( XMVectorGetX( triangleList[triIter].pt[triPtIter] ) >
+                XMVectorGetX( vLightCameraOrthographicMin ) ) 
+              { 
+                iPointPassesCollision[triPtIter] = 1;
+              }
+              else 
+              {
+                iPointPassesCollision[triPtIter] = 0;
+              }
+              iInsideVertCount += iPointPassesCollision[triPtIter];
+            }
+          }
+          else if( frustumPlaneIter == 1 ) 
+          {
+            for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
+            {
+              if( XMVectorGetX( triangleList[triIter].pt[triPtIter] ) < 
+                XMVectorGetX( vLightCameraOrthographicMax ) )
+              {
+                iPointPassesCollision[triPtIter] = 1;
+              }
+              else
+              { 
+                iPointPassesCollision[triPtIter] = 0;
+              }
+              iInsideVertCount += iPointPassesCollision[triPtIter];
+            }
+          }
+          else if( frustumPlaneIter == 2 ) 
+          {
+            for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
+            {
+              if( XMVectorGetY( triangleList[triIter].pt[triPtIter] ) > 
+                XMVectorGetY( vLightCameraOrthographicMin ) ) 
+              {
+                iPointPassesCollision[triPtIter] = 1;
+              }
+              else 
+              {
+                iPointPassesCollision[triPtIter] = 0;
+              }
+              iInsideVertCount += iPointPassesCollision[triPtIter];
+            }
+          }
+          else 
+          {
+            for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
+            {
+              if( XMVectorGetY( triangleList[triIter].pt[triPtIter] ) < 
+                XMVectorGetY( vLightCameraOrthographicMax ) ) 
+              {
+                iPointPassesCollision[triPtIter] = 1;
+              }
+              else 
+              {
+                iPointPassesCollision[triPtIter] = 0;
+              }
+              iInsideVertCount += iPointPassesCollision[triPtIter];
+            }
+          }
+
+          // Move the points that pass the frustum test to the begining of the array.
+          if( iPointPassesCollision[1] && !iPointPassesCollision[0] ) 
+          {
+            tempOrder =  triangleList[triIter].pt[0];   
+            triangleList[triIter].pt[0] = triangleList[triIter].pt[1];
+            triangleList[triIter].pt[1] = tempOrder;
+            iPointPassesCollision[0] = TRUE;            
+            iPointPassesCollision[1] = FALSE;            
+          }
+          if( iPointPassesCollision[2] && !iPointPassesCollision[1] ) 
+          {
+            tempOrder =  triangleList[triIter].pt[1];   
+            triangleList[triIter].pt[1] = triangleList[triIter].pt[2];
+            triangleList[triIter].pt[2] = tempOrder;
+            iPointPassesCollision[1] = TRUE;            
+            iPointPassesCollision[2] = FALSE;                        
+          }
+          if( iPointPassesCollision[1] && !iPointPassesCollision[0] ) 
+          {
+            tempOrder =  triangleList[triIter].pt[0];   
+            triangleList[triIter].pt[0] = triangleList[triIter].pt[1];
+            triangleList[triIter].pt[1] = tempOrder;
+            iPointPassesCollision[0] = TRUE;            
+            iPointPassesCollision[1] = FALSE;            
+          }
+
+          if( iInsideVertCount == 0 ) 
+          { // All points failed. We're done,  
+            triangleList[triIter].culled = true;
+          }
+          else if( iInsideVertCount == 1 ) 
+          {// One point passed. Clip the triangle against the Frustum plane
+            triangleList[triIter].culled = false;
+
+            // 
+            XMVECTOR vVert0ToVert1 = triangleList[triIter].pt[1] - triangleList[triIter].pt[0];
+            XMVECTOR vVert0ToVert2 = triangleList[triIter].pt[2] - triangleList[triIter].pt[0];
+
+            // Find the collision ratio.
+            FLOAT fHitPointTimeRatio = fEdge - XMVectorGetByIndex( triangleList[triIter].pt[0], iComponent ) ;
+            // Calculate the distance along the vector as ratio of the hit ratio to the component.
+            FLOAT fDistanceAlongVector01 = fHitPointTimeRatio / XMVectorGetByIndex( vVert0ToVert1, iComponent );
+            FLOAT fDistanceAlongVector02 = fHitPointTimeRatio / XMVectorGetByIndex( vVert0ToVert2, iComponent );
+            // Add the point plus a percentage of the vector.
+            vVert0ToVert1 *= fDistanceAlongVector01;
+            vVert0ToVert1 += triangleList[triIter].pt[0];
+            vVert0ToVert2 *= fDistanceAlongVector02;
+            vVert0ToVert2 += triangleList[triIter].pt[0];
+
+            triangleList[triIter].pt[1] = vVert0ToVert2;
+            triangleList[triIter].pt[2] = vVert0ToVert1;
+
+          }
+          else if( iInsideVertCount == 2 ) 
+          { // 2 in  // tesselate into 2 triangles
+
+
+            // Copy the triangle\(if it exists) after the current triangle out of
+            // the way so we can override it with the new triangle we're inserting.
+            triangleList[iTriangleCnt] = triangleList[triIter+1];
+
+            triangleList[triIter].culled = false;
+            triangleList[triIter+1].culled = false;
+
+            // Get the vector from the outside point into the 2 inside points.
+            XMVECTOR vVert2ToVert0 = triangleList[triIter].pt[0] - triangleList[triIter].pt[2];
+            XMVECTOR vVert2ToVert1 = triangleList[triIter].pt[1] - triangleList[triIter].pt[2];
+
+            // Get the hit point ratio.
+            FLOAT fHitPointTime_2_0 =  fEdge - XMVectorGetByIndex( triangleList[triIter].pt[2], iComponent );
+            FLOAT fDistanceAlongVector_2_0 = fHitPointTime_2_0 / XMVectorGetByIndex( vVert2ToVert0, iComponent );
+            // Calcaulte the new vert by adding the percentage of the vector plus point 2.
+            vVert2ToVert0 *= fDistanceAlongVector_2_0;
+            vVert2ToVert0 += triangleList[triIter].pt[2];
+
+            // Add a new triangle.
+            triangleList[triIter+1].pt[0] = triangleList[triIter].pt[0];
+            triangleList[triIter+1].pt[1] = triangleList[triIter].pt[1];
+            triangleList[triIter+1].pt[2] = vVert2ToVert0;
+
+            //Get the hit point ratio.
+            FLOAT fHitPointTime_2_1 =  fEdge - XMVectorGetByIndex( triangleList[triIter].pt[2], iComponent ) ;
+            FLOAT fDistanceAlongVector_2_1 = fHitPointTime_2_1 / XMVectorGetByIndex( vVert2ToVert1, iComponent );
+            vVert2ToVert1 *= fDistanceAlongVector_2_1;
+            vVert2ToVert1 += triangleList[triIter].pt[2];
+            triangleList[triIter].pt[0] = triangleList[triIter+1].pt[1];
+            triangleList[triIter].pt[1] = triangleList[triIter+1].pt[2];
+            triangleList[triIter].pt[2] = vVert2ToVert1;
+            // Cncrement triangle count and skip the triangle we just inserted.
+            ++iTriangleCnt;
+            ++triIter;
+
+
+          }
+          else 
+          { // all in
+            triangleList[triIter].culled = false;
+
+          }
+        }// end if !culled loop            
+      }
+    }
+    for( INT index=0; index < iTriangleCnt; ++index ) 
     {
-
-        triangleList[0].pt[0] = pvPointsInCameraView[ iAABBTriIndexes[ AABBTriIter*3 + 0 ] ];
-        triangleList[0].pt[1] = pvPointsInCameraView[ iAABBTriIndexes[ AABBTriIter*3 + 1 ] ];
-        triangleList[0].pt[2] = pvPointsInCameraView[ iAABBTriIndexes[ AABBTriIter*3 + 2 ] ];
-        iTriangleCnt = 1;
-        triangleList[0].culled = FALSE;
-
-        // Clip each invidual triangle against the 4 frustums.  When ever a triangle is clipped into new triangles, 
-        //add them to the list.
-        for( INT frustumPlaneIter = 0; frustumPlaneIter < 4; ++frustumPlaneIter ) 
+      if( !triangleList[index].culled ) 
+      {
+        // Set the near and far plan and the min and max z values respectively.
+        for( int vertind = 0; vertind < 3; ++ vertind ) 
         {
-
-            FLOAT fEdge;
-            INT iComponent;
-            
-            if( frustumPlaneIter == 0 ) 
-            {
-                fEdge = fLightCameraOrthographicMinX; // todo make float temp
-                iComponent = 0;
-            } 
-            else if( frustumPlaneIter == 1 ) 
-            {
-                fEdge = fLightCameraOrthographicMaxX;
-                iComponent = 0;
-            } 
-            else if( frustumPlaneIter == 2 ) 
-            {
-                fEdge = fLightCameraOrthographicMinY;
-                iComponent = 1;
-            } 
-            else 
-            {
-                fEdge = fLightCameraOrthographicMaxY;
-                iComponent = 1;
-            }
-
-            for( INT triIter=0; triIter < iTriangleCnt; ++triIter ) 
-            {
-                // We don't delete triangles, so we skip those that have been culled.
-                if( !triangleList[triIter].culled ) 
-                {
-                    INT iInsideVertCount = 0;
-                    XMVECTOR tempOrder;
-                    // Test against the correct frustum plane.
-                    // This could be written more compactly, but it would be harder to understand.
-                    
-                    if( frustumPlaneIter == 0 ) 
-                    {
-                        for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
-                        {
-                            if( XMVectorGetX( triangleList[triIter].pt[triPtIter] ) >
-                                XMVectorGetX( vLightCameraOrthographicMin ) ) 
-                            { 
-                                iPointPassesCollision[triPtIter] = 1;
-                            }
-                            else 
-                            {
-                                iPointPassesCollision[triPtIter] = 0;
-                            }
-                            iInsideVertCount += iPointPassesCollision[triPtIter];
-                        }
-                    }
-                    else if( frustumPlaneIter == 1 ) 
-                    {
-                        for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
-                        {
-                            if( XMVectorGetX( triangleList[triIter].pt[triPtIter] ) < 
-                                XMVectorGetX( vLightCameraOrthographicMax ) )
-                            {
-                                iPointPassesCollision[triPtIter] = 1;
-                            }
-                            else
-                            { 
-                                iPointPassesCollision[triPtIter] = 0;
-                            }
-                            iInsideVertCount += iPointPassesCollision[triPtIter];
-                        }
-                    }
-                    else if( frustumPlaneIter == 2 ) 
-                    {
-                        for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
-                        {
-                            if( XMVectorGetY( triangleList[triIter].pt[triPtIter] ) > 
-                                XMVectorGetY( vLightCameraOrthographicMin ) ) 
-                            {
-                                iPointPassesCollision[triPtIter] = 1;
-                            }
-                            else 
-                            {
-                                iPointPassesCollision[triPtIter] = 0;
-                            }
-                            iInsideVertCount += iPointPassesCollision[triPtIter];
-                        }
-                    }
-                    else 
-                    {
-                        for( INT triPtIter=0; triPtIter < 3; ++triPtIter ) 
-                        {
-                            if( XMVectorGetY( triangleList[triIter].pt[triPtIter] ) < 
-                                XMVectorGetY( vLightCameraOrthographicMax ) ) 
-                            {
-                                iPointPassesCollision[triPtIter] = 1;
-                            }
-                            else 
-                            {
-                                iPointPassesCollision[triPtIter] = 0;
-                            }
-                            iInsideVertCount += iPointPassesCollision[triPtIter];
-                        }
-                    }
-
-                    // Move the points that pass the frustum test to the begining of the array.
-                    if( iPointPassesCollision[1] && !iPointPassesCollision[0] ) 
-                    {
-                        tempOrder =  triangleList[triIter].pt[0];   
-                        triangleList[triIter].pt[0] = triangleList[triIter].pt[1];
-                        triangleList[triIter].pt[1] = tempOrder;
-                        iPointPassesCollision[0] = TRUE;            
-                        iPointPassesCollision[1] = FALSE;            
-                    }
-                    if( iPointPassesCollision[2] && !iPointPassesCollision[1] ) 
-                    {
-                        tempOrder =  triangleList[triIter].pt[1];   
-                        triangleList[triIter].pt[1] = triangleList[triIter].pt[2];
-                        triangleList[triIter].pt[2] = tempOrder;
-                        iPointPassesCollision[1] = TRUE;            
-                        iPointPassesCollision[2] = FALSE;                        
-                    }
-                    if( iPointPassesCollision[1] && !iPointPassesCollision[0] ) 
-                    {
-                        tempOrder =  triangleList[triIter].pt[0];   
-                        triangleList[triIter].pt[0] = triangleList[triIter].pt[1];
-                        triangleList[triIter].pt[1] = tempOrder;
-                        iPointPassesCollision[0] = TRUE;            
-                        iPointPassesCollision[1] = FALSE;            
-                    }
-                    
-                    if( iInsideVertCount == 0 ) 
-                    { // All points failed. We're done,  
-                        triangleList[triIter].culled = true;
-                    }
-                    else if( iInsideVertCount == 1 ) 
-                    {// One point passed. Clip the triangle against the Frustum plane
-                        triangleList[triIter].culled = false;
-                        
-                        // 
-                        XMVECTOR vVert0ToVert1 = triangleList[triIter].pt[1] - triangleList[triIter].pt[0];
-                        XMVECTOR vVert0ToVert2 = triangleList[triIter].pt[2] - triangleList[triIter].pt[0];
-                        
-                        // Find the collision ratio.
-                        FLOAT fHitPointTimeRatio = fEdge - XMVectorGetByIndex( triangleList[triIter].pt[0], iComponent ) ;
-                        // Calculate the distance along the vector as ratio of the hit ratio to the component.
-                        FLOAT fDistanceAlongVector01 = fHitPointTimeRatio / XMVectorGetByIndex( vVert0ToVert1, iComponent );
-                        FLOAT fDistanceAlongVector02 = fHitPointTimeRatio / XMVectorGetByIndex( vVert0ToVert2, iComponent );
-                        // Add the point plus a percentage of the vector.
-                        vVert0ToVert1 *= fDistanceAlongVector01;
-                        vVert0ToVert1 += triangleList[triIter].pt[0];
-                        vVert0ToVert2 *= fDistanceAlongVector02;
-                        vVert0ToVert2 += triangleList[triIter].pt[0];
-
-                        triangleList[triIter].pt[1] = vVert0ToVert2;
-                        triangleList[triIter].pt[2] = vVert0ToVert1;
-
-                    }
-                    else if( iInsideVertCount == 2 ) 
-                    { // 2 in  // tesselate into 2 triangles
-                        
-
-                        // Copy the triangle\(if it exists) after the current triangle out of
-                        // the way so we can override it with the new triangle we're inserting.
-                        triangleList[iTriangleCnt] = triangleList[triIter+1];
-
-                        triangleList[triIter].culled = false;
-                        triangleList[triIter+1].culled = false;
-                        
-                        // Get the vector from the outside point into the 2 inside points.
-                        XMVECTOR vVert2ToVert0 = triangleList[triIter].pt[0] - triangleList[triIter].pt[2];
-                        XMVECTOR vVert2ToVert1 = triangleList[triIter].pt[1] - triangleList[triIter].pt[2];
-                        
-                        // Get the hit point ratio.
-                        FLOAT fHitPointTime_2_0 =  fEdge - XMVectorGetByIndex( triangleList[triIter].pt[2], iComponent );
-                        FLOAT fDistanceAlongVector_2_0 = fHitPointTime_2_0 / XMVectorGetByIndex( vVert2ToVert0, iComponent );
-                        // Calcaulte the new vert by adding the percentage of the vector plus point 2.
-                        vVert2ToVert0 *= fDistanceAlongVector_2_0;
-                        vVert2ToVert0 += triangleList[triIter].pt[2];
-                        
-                        // Add a new triangle.
-                        triangleList[triIter+1].pt[0] = triangleList[triIter].pt[0];
-                        triangleList[triIter+1].pt[1] = triangleList[triIter].pt[1];
-                        triangleList[triIter+1].pt[2] = vVert2ToVert0;
-                        
-                        //Get the hit point ratio.
-                        FLOAT fHitPointTime_2_1 =  fEdge - XMVectorGetByIndex( triangleList[triIter].pt[2], iComponent ) ;
-                        FLOAT fDistanceAlongVector_2_1 = fHitPointTime_2_1 / XMVectorGetByIndex( vVert2ToVert1, iComponent );
-                        vVert2ToVert1 *= fDistanceAlongVector_2_1;
-                        vVert2ToVert1 += triangleList[triIter].pt[2];
-                        triangleList[triIter].pt[0] = triangleList[triIter+1].pt[1];
-                        triangleList[triIter].pt[1] = triangleList[triIter+1].pt[2];
-                        triangleList[triIter].pt[2] = vVert2ToVert1;
-                        // Cncrement triangle count and skip the triangle we just inserted.
-                        ++iTriangleCnt;
-                        ++triIter;
-
-                    
-                    }
-                    else 
-                    { // all in
-                        triangleList[triIter].culled = false;
-
-                    }
-                }// end if !culled loop            
-            }
+          float fTriangleCoordZ = XMVectorGetZ( triangleList[index].pt[vertind] );
+          if( fNearPlane > fTriangleCoordZ ) 
+          {
+            fNearPlane = fTriangleCoordZ;
+          }
+          if( fFarPlane  <fTriangleCoordZ ) 
+          {
+            fFarPlane = fTriangleCoordZ;
+          }
         }
-        for( INT index=0; index < iTriangleCnt; ++index ) 
-        {
-            if( !triangleList[index].culled ) 
-            {
-                // Set the near and far plan and the min and max z values respectivly.
-                for( int vertind = 0; vertind < 3; ++ vertind ) 
-                {
-                    float fTriangleCoordZ = XMVectorGetZ( triangleList[index].pt[vertind] );
-                    if( fNearPlane > fTriangleCoordZ ) 
-                    {
-                        fNearPlane = fTriangleCoordZ;
-                    }
-                    if( fFarPlane  <fTriangleCoordZ ) 
-                    {
-                        fFarPlane = fTriangleCoordZ;
-                    }
-                }
-            }
-        }
-    }    
+      }
+    }
+  }    
 
 }
 
