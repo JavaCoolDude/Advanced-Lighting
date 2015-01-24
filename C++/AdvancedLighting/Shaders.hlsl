@@ -51,7 +51,8 @@ VS_OUTPUT_LIGHT VSMainLight(float3 vPosition  : POSITION, uint iid : SV_Instance
 
   output.vPosition    = TransformPosition(new_position, instance.m_WorldViewProj);
   
-  output.fLightIndex  = instance.m_LightIndex;
+  // The 0.5 is necessary on NVIDIA cards
+  output.fLightIndex  = instance.m_LightIndex + 0.5f;
 
   // Done
   return output;
