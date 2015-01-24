@@ -51,8 +51,7 @@ VS_OUTPUT_LIGHT VSMainLight(float3 vPosition  : POSITION, uint iid : SV_Instance
 
   output.vPosition    = TransformPosition(new_position, instance.m_WorldViewProj);
   
-  // The 0.5 is necessary on NVIDIA cards
-  output.fLightIndex  = instance.m_LightIndex + 0.5f;
+  output.iLightIndex  = instance.m_LightIndex;
 
   // Done
   return output;
@@ -294,7 +293,7 @@ void AllocateLightFragmentLink(uint dst_offset, uint light_index, float min_d, f
 
 //--------------------------------------------------------------------------------------------------
 void PSInsertLightNoCulling(in float4 vpos_f      : SV_POSITION,
-                            in float  fLightIndex : TEXCOORD0,
+                            in uint   iLightIndex : TEXCOORD0,
                             in bool   front_face  : SV_IsFrontFace )
 {
   // Float to unsigned int
@@ -304,7 +303,7 @@ void PSInsertLightNoCulling(in float4 vpos_f      : SV_POSITION,
   float   light_depth      = vpos_f.w; 
 
   // Light global index
-  uint    light_index      = fLightIndex;
+  uint    light_index      = iLightIndex;
   
   // Detect front faces
   if((front_face == true) && ( g_txDepth[vpos_i].x < light_depth))
@@ -349,7 +348,7 @@ void PSInsertLightNoCulling(in float4 vpos_f      : SV_POSITION,
 
 //--------------------------------------------------------------------------------------------------
 void PSInsertLightBackFace(in float4 vpos_f      : SV_POSITION,
-                           in float  fLightIndex : TEXCOORD0,
+                           in uint   iLightIndex : TEXCOORD0,
                            in bool   front_face  : SV_IsFrontFace )
 {
   // Float to unsigned int
@@ -359,7 +358,7 @@ void PSInsertLightBackFace(in float4 vpos_f      : SV_POSITION,
   float   light_depth      = vpos_f.w; 
 
   // Light global index
-  uint    light_index      = fLightIndex;
+  uint    light_index      = iLightIndex;
    
   // Calculate the ByteAddressBuffer destination offset:
   // Since we don't do instancing in this code path stick with the first layer

@@ -69,8 +69,8 @@ struct VS_OUTPUT_SIMPLE
 
 struct VS_OUTPUT_LIGHT
 {
-  float4 vPosition    : SV_POSITION;
-  float  fLightIndex  : TEXCOORD0;
+  float4               vPosition    : SV_POSITION;
+  nointerpolation uint iLightIndex  : TEXCOORD0;
 };
 
 //--------------------------------------------------------------------------------------------------
