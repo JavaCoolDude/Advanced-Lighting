@@ -13,10 +13,11 @@
 // Constant Buffers 
 //--------------------------------------------------------------------------------------
 #define CB_FRAME             0
-#define CB_SIMPLE            1
-#define CB_LIGHT_INSTANCES   1
+#define CB_LIGHTS            1
+#define CB_SIMPLE            2
+#define CB_LIGHT_INSTANCES   2
 
-#define CB_SHADOW_DATA       2
+#define CB_SHADOW_DATA       3
 
 //--------------------------------------------------------------------------------------
 // Textures 
@@ -31,7 +32,6 @@
 
 #define SRV_LIGHT_LINKED     10
 #define SRV_LIGHT_OFFSET     11
-#define SRV_LIGHT_ENV        12
 
 //--------------------------------------------------------------------------------------
 // Samplers 
@@ -103,6 +103,12 @@ cbuffer FrameCB     B_REGISTER( CB_FRAME )
     uint            m_iLLLHeight;
     uint            m_iLLLMaxAlloc; 
     float           m_fLightPushScale;
+};
+
+//-------------------------------------------------------------------------
+cbuffer LightsCB     B_REGISTER( CB_LIGHTS )
+{
+  GPULightEnv       m_LightEnvs[MAX_LLL_LIGHTS];
 };
 
 //-------------------------------------------------------------------------

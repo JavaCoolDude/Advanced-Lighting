@@ -93,60 +93,6 @@ private:
   void*           m_BaseAddress;
   ID3D11Buffer*   m_D3DBuffer; 
 };
- 
-//------------------------------------------------------------------------------------------------------------------
-__declspec(align(16)) class GPULightEnvAlloc
-{
-
-public:
-  //--------------------------------------------------------------------------------------------------
-  bool  Init(ID3D11Device* pd3dDevice);
-
-  //--------------------------------------------------------------------------------------------------
-  void  Destroy();
-
-  //--------------------------------------------------------------------------------------------------
-  void  BeginFrame(ID3D11DeviceContext*    pd3dDeviceContext);
-
-  //--------------------------------------------------------------------------------------------------
-  GPULightEnv* AllocateReflectionVolumes(uint32_t count);
-
-  //--------------------------------------------------------------------------------------------------
-  GPULightEnv* Allocate(uint32_t count = 1);
-
-  //--------------------------------------------------------------------------------------------------                                       
-  inline ID3D11ShaderResourceView*    GetSRV()                              { return m_StructuredBufferViewer;                 }
-                                                                                                                               
-  //-------------------------------------------------------------------------------------------------=                          
-  inline ID3D11Buffer*                GetBuffer()                           { return m_StructuredBuffer;                       }
-                                                                                                                               
-  //--------------------------------------------------------------------------------------------------                         
-  inline uint32_t                     GetAllocCount() const                 { return m_FrameMemOffset/sizeof(GPULightEnv);     }
-
-  //--------------------------------------------------------------------------------------------------
-  inline uint32_t                     GetAllocIndex(const GPULightEnv* env) { return uint32_t(env - (GPULightEnv*)m_FrameMem); }
-
-  //--------------------------------------------------------------------------------------------------
-  inline uint32_t                     GetReflectionIndices() const          { return (m_ReflEndIndex << 16) | m_ReflStartIndex;}
-
-  //--------------------------------------------------------------------------------------------------
-  inline uint32_t                     GetReflStartIndex()    const          { return m_ReflStartIndex; }
-
-  //--------------------------------------------------------------------------------------------------
-  inline uint32_t                     GetReflEndIndex()      const          { return m_ReflEndIndex;   }
-
-private: 
-  ID3D11ShaderResourceView*    m_StructuredBufferViewer;
-  ID3D11Buffer*                m_StructuredBuffer;
-  void*                       m_Placement;
-
-  uint32_t                    m_FrameMemOffset;
-  uint32_t                    m_FrameMemMax;  
-  uint8_t*                    m_FrameMem; 
-
-  uint32_t                    m_ReflStartIndex;
-  uint32_t                    m_ReflEndIndex;
-};
 
 //-------------------------------------------------------------------------------------------------------------------------------
 enum DebugRendering
@@ -286,6 +232,7 @@ private:
     ID3D11Buffer*                       m_pcbLightInstancesCB;  
     ID3D11Buffer*                       m_pcbShadowCB;  
     ID3D11Buffer*                       m_pcbSimpleCB;  
+    ID3D11Buffer*                       m_pcbLightsCB;
     ID3D11Buffer*                       m_pcbFrameCB;  
 
     ID3D11Buffer*                       m_pLightVB;  
@@ -312,8 +259,7 @@ private:
 
     ID3D11DeviceContext*                m_pd3dDeviceContext;
     ID3D11Device*                       m_pd3dDevice;
-    
-    GPULightEnvAlloc                    m_GPULightEnvAlloc;
+     
     DynamicD3DBuffer                    m_DynamicVB;
 
     uint32_t                            m_DynamicVertexAllocCount;

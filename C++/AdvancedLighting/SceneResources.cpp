@@ -239,7 +239,6 @@ HRESULT SceneManager::Init ( ID3D11Device*           pd3dDevice,
     m_pd3dDeviceContext       = pd3dDeviceContext; 
     m_pd3dDevice              = pd3dDevice;
      
-    m_GPULightEnvAlloc.Init(pd3dDevice);
     m_DynamicVB.Init(pd3dDevice, 4 * 1024 * 1024);
 
     m_DynamicVertexAllocCount = 0;
@@ -373,6 +372,13 @@ HRESULT SceneManager::Init ( ID3D11Device*           pd3dDevice,
       Desc.ByteWidth = sizeof( FrameCB );
       V_RETURN( pd3dDevice->CreateBuffer( &Desc, nullptr, &m_pcbFrameCB ) );
       DXUT_SetDebugName( m_pcbFrameCB, "FrameCB" );
+    }
+
+    // Lights
+    {
+      Desc.ByteWidth = sizeof( LightsCB );
+      V_RETURN( pd3dDevice->CreateBuffer( &Desc, nullptr, &m_pcbLightsCB ) );
+      DXUT_SetDebugName( m_pcbLightsCB, "LightsCB" );
     }
 
     // Shadow
@@ -662,9 +668,10 @@ HRESULT SceneManager::ReleaseResources()
   SAFE_RELEASE( m_pcbLightInstancesCB);
   SAFE_RELEASE( m_pcbSimpleCB        );
   SAFE_RELEASE( m_pcbShadowCB        );
+  SAFE_RELEASE( m_pcbLightsCB        )
   SAFE_RELEASE( m_pcbFrameCB         );
  
-  SAFE_RELEASE( m_pLightVB    );
+  SAFE_RELEASE( m_pLightVB           );
 
   SAFE_RELEASE( m_prsCullFrontFaces );
   SAFE_RELEASE( m_prsCullBackFaces  );
@@ -695,8 +702,7 @@ HRESULT SceneManager::ReleaseResources()
   m_ppsClearLLL.Release();
   m_ppsGBuffer.Release();
   m_ppsTexture.Release();
-  
-  m_GPULightEnvAlloc.Destroy();
+   
   m_DynamicVB.Destroy();
 
   return S_OK;
@@ -785,130 +791,3 @@ void DynamicD3DBuffer::BeginFrame(ID3D11DeviceContext* pd3dDeviceContext)
   } 
   m_CurrentPos = 0;
 }
- 
-//--------------------------------------------------------------------------------------------------
-bool  GPULightEnvAlloc::Init(ID3D11Device* pd3dDevice)
-{ 
-  int       total_alloc_size        = sizeof(GPULightEnv) * (MAX_LLL_LIGHTS + 32);
-     
-  // Create the Vertex buffer
-  {
-    D3D11_BUFFER_DESC   buffer_desc = { 0 };
-
-    buffer_desc.Usage               = D3D11_USAGE_DYNAMIC;
-    buffer_desc.CPUAccessFlags      = D3D11_CPU_ACCESS_WRITE;  
-    buffer_desc.ByteWidth           = total_alloc_size;
-    buffer_desc.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
-    buffer_desc.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-    buffer_desc.StructureByteStride = sizeof(GPULightEnv);
-
-    HRESULT       hr                = S_OK;
-
-    // Create the buffer
-    hr                              = pd3dDevice->CreateBuffer(&buffer_desc, NULL, &m_StructuredBuffer);
-
-    // Validate the buffer
-    if(hr != S_OK)
-    {
-      assert(!"GPULightEnvAlloc::Init: Failed to create the D3DBuffer!");
-      return false;
-    }
-     
-    D3D11_BUFFER_DESC descBuf;
-    m_StructuredBuffer->GetDesc( &descBuf );
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC descView;
-    memset( &descView, 0x00, sizeof(descView) );
-    descView.ViewDimension         = D3D11_SRV_DIMENSION_BUFFEREX;
-    descView.BufferEx.FirstElement = 0;
-
-    descView.Format               = DXGI_FORMAT_UNKNOWN;
-    descView.BufferEx.NumElements = descBuf.ByteWidth/descBuf.StructureByteStride;
-    hr                            = pd3dDevice->CreateShaderResourceView( m_StructuredBuffer,  &descView, &m_StructuredBufferViewer );
-
-     // Validate the buffer
-     if(hr != S_OK)
-     {
-       assert(!"Failed to create the resource view");
-       return false;
-     }
-  }
-  
-  m_FrameMemMax         = total_alloc_size;
-
-  // Clear member variables
-  m_FrameMem            = NULL;
-  m_FrameMemOffset      = 0;  
-  m_ReflStartIndex      = 0;
-  m_ReflEndIndex        = 0;
-
-  // done
-  return true;
-}
-
-
-//--------------------------------------------------------------------------------------------------
-GPULightEnv* GPULightEnvAlloc::AllocateReflectionVolumes(uint32_t count)
-{
-  uint32_t      start_idx  = GetAllocCount();
-  uint32_t      end_idx    = start_idx + count;
-
-  GPULightEnv*  alloc      = Allocate(count);
-
-  // Validate
-  if(alloc == NULL)
-  {
-    return NULL;
-  }
-
-  m_ReflStartIndex = start_idx;
-  m_ReflEndIndex   = end_idx;
-
-  // Done
-  return alloc;
-}
-
-//--------------------------------------------------------------------------------------------------
-GPULightEnv* GPULightEnvAlloc::Allocate(uint32_t count)
-{
-  assert(m_FrameMemOffset <= m_FrameMemMax);
-
-  GPULightEnv* env        = NULL;
-  uint32_t     alloc_size = count * sizeof(GPULightEnv);
-
-  if((m_FrameMem != NULL) && (m_FrameMemOffset + alloc_size <= m_FrameMemMax))
-  {
-    env               = (GPULightEnv*)(m_FrameMem + m_FrameMemOffset);
-    m_FrameMemOffset += alloc_size;
-  }
-
-  // Done
-  return env;
-}
-
-//-------------------------------------------------------------------------------------------------- 
-void  GPULightEnvAlloc::BeginFrame(ID3D11DeviceContext*    pd3dDeviceContext)
-{
-  m_FrameMemOffset = 0;  
-  m_ReflStartIndex = 0;
-  m_ReflEndIndex   = 0;
-
-  {
-    D3D11_MAPPED_SUBRESOURCE res; 
-    pd3dDeviceContext->Map(m_StructuredBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &res);
-    m_FrameMem     = (uint8_t*)res.pData;  
-    pd3dDeviceContext->Unmap(m_StructuredBuffer, 0);
-  }
-}
-
-//--------------------------------------------------------------------------------------------------
-void  GPULightEnvAlloc::Destroy()
-{
-  SAFE_RELEASE(m_StructuredBufferViewer); 
-  SAFE_RELEASE(m_StructuredBuffer); 
-
-  m_StructuredBufferViewer = NULL; 
-  m_StructuredBuffer       = NULL; 
-}
-
- 

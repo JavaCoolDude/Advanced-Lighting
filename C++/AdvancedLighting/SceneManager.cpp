@@ -90,7 +90,6 @@ HRESULT SceneManager::InitFrame ( CFirstPersonCamera*     pViewerCamera,
   
   m_matShadowView = matLightCameraView;
      
-  m_GPULightEnvAlloc.BeginFrame( m_pd3dDeviceContext );
   m_DynamicVB.BeginFrame(m_pd3dDeviceContext); 
 
   // Reset the scratch memory
@@ -216,10 +215,8 @@ HRESULT SceneManager::InitFrame ( CFirstPersonCamera*     pViewerCamera,
       vWorldUnitsPerTexel       = XMVectorSet( fWorldUnitsPerTexel, fWorldUnitsPerTexel, 0.0f, 0.0f ); 
     } 
     
-    float fLightCameraOrthographicMinZ = XMVectorGetZ( vLightCameraOrthographicMin );
-    
     {    
-      // We snape the camera to 1 pixel increments so that moving the camera does not cause the shadows to jitter.
+      // We snap the camera to 1 pixel increments so that moving the camera does not cause the shadows to jitter.
       // This is a matter of integer dividing by the world space size of a texel
       vLightCameraOrthographicMin /= vWorldUnitsPerTexel;
       vLightCameraOrthographicMin = XMVectorFloor( vLightCameraOrthographicMin );
@@ -414,7 +411,9 @@ inline float RandFloatNormalized()
 //--------------------------------------------------------------------------------------
 HRESULT SceneManager::ProcessLinkedList()
 {
-  // Remove resources
+  HRESULT hr = S_OK;
+
+  // Unbind resources
   ClearTextures(6, 3);
 
   // Unbind the previously bound UAVs
@@ -496,7 +495,13 @@ HRESULT SceneManager::ProcessLinkedList()
     float x_bound                = XMVectorGetX(m_vSceneAABBMin);
     float z_bound                = XMVectorGetZ(m_vSceneAABBMin);
      
-    GPULightEnv* gpu_lights      = m_GPULightEnvAlloc.Allocate( MAX_LLL_LIGHTS );
+    // Fill the lights
+    D3D11_MAPPED_SUBRESOURCE MappedResource;
+
+    V( m_pd3dDeviceContext->Map( m_pcbLightsCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource ) );
+    auto         lights_cb       = reinterpret_cast<LightsCB*>( MappedResource.pData );
+  
+    GPULightEnv* gpu_lights      = lights_cb->m_LightEnvs;
     GPULightEnv* scratch_lights  = (GPULightEnv*)ScratchAlloc(sizeof(GPULightEnv) * MAX_LLL_LIGHTS); 
                                  
     GPULightEnv* clipped_light   = scratch_lights; 
@@ -657,6 +662,12 @@ HRESULT SceneManager::ProcessLinkedList()
     } 
   }
 
+  // Done uploading
+  m_pd3dDeviceContext->Unmap( m_pcbLightsCB, 0 );
+
+  // Set the constant buffer 
+  m_pd3dDeviceContext->PSSetConstantBuffers( CB_LIGHTS, 1, &m_pcbLightsCB);
+  
   // Clear the UAVs and bind them as SRVs
   {
     const void*     pUAVs[]      = { nullptr, nullptr, nullptr};
@@ -672,14 +683,11 @@ HRESULT SceneManager::ProcessLinkedList()
     SetResourceView( SRV_LIGHT_OFFSET, m_LLLTarget.GetStartOffsetSRV()  );
   }
 
-  // Bind the global light environments
-  SetResourceView( SRV_LIGHT_ENV, m_GPULightEnvAlloc.GetSRV()  );
-
   // Clear the linear depth texture
   ClearTexture( TEX_DEPTH );
 
   // Done
-  return S_OK;
+  return hr;
 }
 
 //--------------------------------------------------------------------------------------
@@ -694,7 +702,7 @@ HRESULT SceneManager::CompositeScene(ID3D11RenderTargetView* prtvBackBuffer)
     D3D11_MAPPED_SUBRESOURCE MappedResource;
   
     V( m_pd3dDeviceContext->Map( m_pcbShadowCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource ) );
-    auto shadow_data = reinterpret_cast<ShadowDataCB*>( MappedResource.pData );
+    auto shadow_data                    = reinterpret_cast<ShadowDataCB*>( MappedResource.pData );
   
     // These are the for loop begin end values. 
     shadow_data->m_iPCFBlurForLoopEnd   = m_iPCFBlurSize / 2 +1;

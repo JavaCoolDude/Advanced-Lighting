@@ -35,7 +35,6 @@ globallycoherent RWByteAddressBuffer                      g_LightBoundsBuffer   
 StructuredBuffer< LightFragmentLink >                     g_LightFragmentLinkedView     : T_REGISTER( SRV_LIGHT_LINKED );
 Buffer<uint>                                              g_LightStartOffsetView        : T_REGISTER( SRV_LIGHT_OFFSET ); 
 
-StructuredBuffer<GPULightEnv>                             g_LightEnvs                   : T_REGISTER( SRV_LIGHT_ENV    );
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -208,7 +207,7 @@ void EvaluateDynamicLights(in     float3 ws_pos,
     uint          light_idx   = (element.m_IndexNext >>     24);
 
     // Access the light environment                
-    GPULightEnv   light_env   = g_LightEnvs[ light_idx ];
+    GPULightEnv   light_env   = m_LightEnvs[ light_idx ];
 
     EvaluatePunctualLight(light_env, ws_pos, ws_nrm, dynamic_diffuse, dynamic_specular);
   }
